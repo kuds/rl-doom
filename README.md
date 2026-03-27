@@ -98,6 +98,9 @@ All notebooks save artifacts to disk for reproducibility:
 | `checkpoints/` | Model weights (`.pt` files) |
 | `media/` | Gameplay GIFs of trained agents |
 
+## Blog Posts
+- [Advanced Architectures and Methodologies in Visual Reinforcement Learning: A Technical Analysis of the ViZDoom Platform](https://www.findingtheta.com/blog/advanced-architectures-and-methodologies-in-visual-reinforcement-learning-a-technical-analysis-of-the-vizdoom-platform)
+
 ## License
 
 MIT
