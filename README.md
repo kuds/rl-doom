@@ -93,10 +93,41 @@ All notebooks save artifacts to disk for reproducibility:
 
 | Directory | Contents |
 |-----------|----------|
-| `figures/` | Learning curves, evaluation plots, saliency maps (PNG) |
-| `logs/` | Training rewards, losses, epsilons (`.npz` files) |
-| `checkpoints/` | Model weights (`.pt` files) |
+| `figures/` | Learning curves, evaluation plots, saliency maps, action distributions (PNG) |
+| `logs/` | Training metrics (`.npz`), cross-scenario comparisons (`.csv`), saliency arrays, multi-seed evaluations |
+| `checkpoints/` | Model weights (`.pt`) and full checkpoints with optimizer state & config (`*_full.pt`) |
 | `media/` | Gameplay GIFs of trained agents |
+| `runs/` | TensorBoard event files for real-time monitoring |
+
+### Metrics logged per algorithm
+
+| Metric | DQN | PPO |
+|--------|-----|-----|
+| Episode rewards | Yes | Yes |
+| Episode lengths | Yes | Yes |
+| Training loss | Yes (Huber) | Yes (policy + value) |
+| Epsilon schedule | Yes | — |
+| Mean Q-values | Yes | — |
+| Action distribution | Yes | — |
+| Policy entropy | — | Yes |
+| Clip fraction | — | Yes |
+| Eval rewards + lengths | Yes | Yes |
+| Wall-clock time & FPS | Yes | Yes |
+| Reproducibility metadata | Yes | Yes |
+
+### TensorBoard
+
+Launch TensorBoard to monitor training in real time:
+
+```bash
+tensorboard --logdir runs/
+```
+
+### Shared Utilities
+
+`src/rl_doom/utils.py` provides reusable helpers for Google Drive persistence,
+reproducibility metadata collection, smoothed plotting, training timers, and
+checkpoint saving with metadata.
 
 ## Blog Posts
 - [Advanced Architectures and Methodologies in Visual Reinforcement Learning: A Technical Analysis of the ViZDoom Platform](https://www.findingtheta.com/blog/advanced-architectures-and-methodologies-in-visual-reinforcement-learning-a-technical-analysis-of-the-vizdoom-platform)
