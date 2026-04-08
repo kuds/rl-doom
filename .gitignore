@@ -17,6 +17,7 @@ env/
 # Training artifacts
 checkpoints/
 logs/
+figures/
 media/
 runs/
 
