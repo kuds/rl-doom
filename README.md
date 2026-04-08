@@ -47,7 +47,12 @@ pip install -e ".[notebooks,dev]"
 
 ### Google Colab
 
-Each notebook includes a commented-out cell that mounts Google Drive for persistent storage of checkpoints, logs, figures, and media across Colab sessions. Uncomment the cell and run it to activate.
+Each notebook includes a commented-out **Colab Setup** cell at the top. Uncomment it to automatically:
+1. Clone the repo to `/content/rl-doom`
+2. Install the package with all dependencies (`pip install -e .[notebooks]`)
+3. Set the working directory to `notebooks/`
+
+There is also a separate **Google Drive** cell you can uncomment to persist artifacts (checkpoints, logs, figures, media) across Colab sessions via Google Drive symlinks.
 
 ## Quick Start
 
