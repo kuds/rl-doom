@@ -9,7 +9,7 @@ algorithms (PPO, DQN) with CNN-based visual policies.
 
 ---
 
-## Phase 1: Project Scaffolding & Environment Setup
+## Phase 1: Project Scaffolding & Environment Setup  ✓
 
 ### 1.1 Project Structure
 ```
@@ -49,20 +49,20 @@ rl-doom/
     └── test_agents.py
 ```
 
-### 1.2 Dependencies (`pyproject.toml`)
+### 1.2 Dependencies (`pyproject.toml`)  ✓
 - **Core:** `vizdoom>=1.2`, `gymnasium`, `torch>=2.0`, `numpy`
 - **Utilities:** `opencv-python`, `pyyaml`, `tensorboard`, `matplotlib`
 - **Notebooks:** `jupyter`, `ipywidgets`
 - **Dev:** `pytest`, `ruff`, `pre-commit`
 
-### 1.3 Initial Files
+### 1.3 Initial Files  ✓
 - `README.md` — project overview, setup instructions, quickstart
 - `.gitignore` — Python, Jupyter, model checkpoints, logs
 - `pyproject.toml` — PEP 621 project definition
 
 ---
 
-## Phase 2: Environment Wrappers (`src/rl_doom/env.py`)
+## Phase 2: Environment Wrappers (`src/rl_doom/env.py`)  ✓
 
 Wrap ViZDoom to comply with the Gymnasium API so standard RL libraries work seamlessly.
 
@@ -73,7 +73,6 @@ Wrap ViZDoom to comply with the Gymnasium API so standard RL libraries work seam
 | `FrameStack` | Stack N grayscale frames (temporal info) |
 | `ResizeObservation` | Resize frames to 84×84 or 64×64 |
 | `SkipFrame` | Action repeat / frame skipping |
-| `RewardShaping` | Scenario-specific reward adjustments |
 
 ### Scenarios to support (built into ViZDoom):
 1. **Basic** — single room, shoot a monster
@@ -83,7 +82,7 @@ Wrap ViZDoom to comply with the Gymnasium API so standard RL libraries work seam
 
 ---
 
-## Phase 3: Models (`src/rl_doom/models.py`)
+## Phase 3: Models (`src/rl_doom/models.py`)  ✓
 
 ### 3.1 CNN Feature Extractor
 ```
@@ -103,11 +102,11 @@ Standard Nature-DQN architecture, proven for Doom-scale visual inputs.
 
 ---
 
-## Phase 4: Agents
+## Phase 4: Agents  ✓
 
 ### 4.1 DQN Agent (`src/rl_doom/agents/dqn.py`)
 - Epsilon-greedy exploration (decay schedule)
-- Experience replay buffer (uniform, optionally prioritized)
+- Experience replay buffer (uniform)
 - Target network with periodic hard updates
 - Double DQN variant to reduce overestimation
 - Huber loss
@@ -117,12 +116,15 @@ Standard Nature-DQN architecture, proven for Doom-scale visual inputs.
 - GAE (Generalized Advantage Estimation, lambda=0.95)
 - Mini-batch updates over collected rollouts
 - Entropy bonus for exploration
-- Value function clipping
+- Value function loss
 - Gradient norm clipping
 
 ---
 
-## Phase 5: Training Infrastructure (`src/rl_doom/train.py`)
+## Phase 5: Training Infrastructure
+
+> **Status:** Notebooks contain inline training loops (see Phase 6).
+> A standalone `src/rl_doom/train.py` CLI entry point is not yet implemented.
 
 - YAML-driven config (scenario, hyperparams, agent type)
 - TensorBoard logging (rewards, loss, epsilon, FPS)
@@ -133,7 +135,7 @@ Standard Nature-DQN architecture, proven for Doom-scale visual inputs.
 
 ---
 
-## Phase 6: Notebooks
+## Phase 6: Notebooks  ✓
 
 ### `01_environment_exploration.ipynb`
 - Install/verify ViZDoom
@@ -161,16 +163,18 @@ Standard Nature-DQN architecture, proven for Doom-scale visual inputs.
 
 ---
 
-## Phase 7: Evaluation & Recording (`src/rl_doom/evaluate.py`)
+## Phase 7: Evaluation & Recording (`src/rl_doom/evaluate.py`)  ✓
 
 - Load trained checkpoint and run episodes
-- Record gameplay as MP4 (via ViZDoom's built-in recording or OpenCV)
-- Compute aggregate stats (mean reward, kill count, survival time)
-- Optional: generate GIFs for README
+- Record gameplay as frames (via ViZDoom screen buffer)
+- Compute aggregate stats (mean reward per episode)
+- GIF generation for notebooks and README
 
 ---
 
 ## Phase 8: Testing
+
+> **Status:** Not yet implemented.
 
 - `test_env.py` — env creation, reset, step, observation shapes
 - `test_models.py` — forward pass shapes, parameter counts
@@ -180,19 +184,29 @@ Standard Nature-DQN architecture, proven for Doom-scale visual inputs.
 
 ## Recommended Implementation Order
 
-| Step | What | Priority |
-|------|------|----------|
-| 1 | Project scaffolding (pyproject.toml, .gitignore, README) | **P0** |
-| 2 | Environment wrappers + Notebook 01 | **P0** |
-| 3 | CNN model + DQN agent | **P0** |
-| 4 | Training loop + configs | **P0** |
-| 5 | Notebook 02 (DQN training) | **P1** |
-| 6 | PPO agent | **P1** |
-| 7 | Notebook 03 (PPO training) | **P1** |
-| 8 | Evaluation/recording tools | **P1** |
-| 9 | Notebook 04 (analysis) | **P2** |
-| 10 | Tests | **P2** |
-| 11 | Advanced: Prioritized replay, Dueling DQN, curiosity | **P3** |
+| Step | What | Priority | Status |
+|------|------|----------|--------|
+| 1 | Project scaffolding (pyproject.toml, .gitignore, README) | **P0** | ✓ Done |
+| 2 | Environment wrappers + Notebook 01 | **P0** | ✓ Done |
+| 3 | CNN model + DQN agent | **P0** | ✓ Done |
+| 4 | Training loop + configs | **P0** | Partial (notebooks only) |
+| 5 | Notebook 02 (DQN training) | **P1** | ✓ Done |
+| 6 | PPO agent | **P1** | ✓ Done |
+| 7 | Notebook 03 (PPO training) | **P1** | ✓ Done |
+| 8 | Evaluation/recording tools | **P1** | ✓ Done |
+| 9 | Notebook 04 (analysis) | **P2** | ✓ Done |
+| 10 | Tests | **P2** | Not started |
+| 11 | Advanced: Prioritized replay, Dueling DQN, curiosity | **P3** | Not started |
+
+---
+
+## Still TODO
+
+- `configs/*.yaml` — YAML config files for CLI training
+- `src/rl_doom/train.py` — standalone CLI training entry point
+- `scripts/train.sh`, `scripts/record_gameplay.sh` — shell launchers
+- `tests/` — unit tests for env, models, agents
+- `RewardShaping` wrapper (listed in original plan, not yet needed by notebooks)
 
 ---
 
