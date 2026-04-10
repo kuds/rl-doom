@@ -85,7 +85,7 @@ class DoomEnv(gym.Env):
     def _get_obs(self) -> np.ndarray:
         state = self.game.get_state()
         if state is not None:
-            return state.screen_buffer.transpose(1, 2, 0)  # CHW -> HWC
+            return state.screen_buffer  # already HWC with RGB24 format
         # After episode ends the state can be None; return a black frame.
         return np.zeros(self.observation_space.shape, dtype=np.uint8)
 
