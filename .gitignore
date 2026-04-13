@@ -15,11 +15,8 @@ env/
 .ipynb_checkpoints/
 
 # Training artifacts
-checkpoints/
-logs/
-figures/
-media/
-runs/
+training_jobs/
+analysis/
 
 # OS
 .DS_Store
