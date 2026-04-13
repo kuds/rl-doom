@@ -35,3 +35,7 @@ Thumbs.db
 *.pt
 *.pth
 *.onnx
+
+# ViZDoom runtime artifacts
+_vizdoom.ini
+_vizdoom/

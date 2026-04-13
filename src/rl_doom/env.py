@@ -85,7 +85,13 @@ class DoomEnv(gym.Env):
     def _get_obs(self) -> np.ndarray:
         state = self.game.get_state()
         if state is not None:
-            return state.screen_buffer.transpose(1, 2, 0)  # CHW -> HWC
+            buf = state.screen_buffer
+            # With ScreenFormat.RGB24 the buffer is already (H, W, 3).
+            # With channel-first formats (e.g. CRCGCB) it would be (3, H, W);
+            # handle that case defensively so the observation is always HWC.
+            if buf.ndim == 3 and buf.shape[0] == 3 and buf.shape[-1] != 3:
+                buf = buf.transpose(1, 2, 0)
+            return buf
         # After episode ends the state can be None; return a black frame.
         return np.zeros(self.observation_space.shape, dtype=np.uint8)
 
