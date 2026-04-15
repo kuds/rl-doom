@@ -26,6 +26,7 @@ notebooks = [
     "ipywidgets",
     "pandas",
     "imageio",
+    "imageio-ffmpeg",
 ]
 dev = [
     "pytest",
