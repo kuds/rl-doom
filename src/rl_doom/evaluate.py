@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -87,3 +88,60 @@ def record_episode(
 
     env.close()
     return frames
+
+
+def save_video(
+    frames: list[np.ndarray],
+    path: str | Path,
+    *,
+    fps: int = 20,
+) -> Path:
+    """Save a list of RGB frames as a video file.
+
+    The output format is chosen from the file extension:
+    ``.mp4`` (default) writes an H.264 video via ``imageio-ffmpeg``;
+    ``.gif`` writes an animated GIF. If MP4 encoding fails (e.g. because
+    ``imageio-ffmpeg`` is not installed), the function falls back to a
+    sibling ``.gif`` and returns that path instead.
+
+    Returns the actual path written.
+    """
+    import imageio
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ext = path.suffix.lower()
+
+    if ext == ".gif":
+        imageio.mimsave(path, frames, fps=fps, loop=0)
+        return path
+
+    try:
+        imageio.mimsave(path, frames, fps=fps)
+        return path
+    except Exception as exc:  # noqa: BLE001 — fall back on any encoder error
+        fallback = path.with_suffix(".gif")
+        imageio.mimsave(fallback, frames, fps=fps, loop=0)
+        print(
+            f"Warning: video encoding to {path.suffix} failed ({exc}). "
+            f"Saved GIF fallback to {fallback}"
+        )
+        return fallback
+
+
+def record_and_save_video(
+    agent: Any,
+    make_env: Callable[[], Any],
+    path: str | Path,
+    *,
+    epsilon: float = 0.0,
+    max_steps: int = 5_000,
+    fps: int = 20,
+) -> Path:
+    """Record one episode of *agent* and save it as a video file.
+
+    Convenience wrapper around :func:`record_episode` + :func:`save_video`
+    so notebooks can produce a "model in action" clip in a single call.
+    """
+    frames = record_episode(agent, make_env, epsilon=epsilon, max_steps=max_steps)
+    return save_video(frames, path, fps=fps)

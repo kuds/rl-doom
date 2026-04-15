@@ -200,3 +200,28 @@ class FrameStack(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         self._frames.append(obs)
         return np.array(self._frames), reward, terminated, truncated, info
+
+
+# ======================================================================
+# Factory helper
+# ======================================================================
+
+
+def make_wrapped_env(
+    scenario: str,
+    *,
+    resize_shape: tuple[int, int] = (84, 84),
+    frame_skip: int = 4,
+    num_stack: int = 4,
+) -> gym.Env:
+    """Build the standard Atari-style preprocessing pipeline for a ViZDoom scenario.
+
+    Chains ``DoomEnv -> ResizeObservation -> SkipFrame -> FrameStack``.  This
+    is the wrapper stack used by every training and analysis notebook, so
+    centralising it here keeps them in lock-step.
+    """
+    env: gym.Env = DoomEnv(scenario=scenario)
+    env = ResizeObservation(env, shape=resize_shape)
+    env = SkipFrame(env, skip=frame_skip)
+    env = FrameStack(env, num_stack=num_stack)
+    return env
