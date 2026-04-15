@@ -84,15 +84,24 @@ def list_runs(env: str, algo: str) -> list[Path]:
 def latest_run(env: str, algo: str) -> Path:
     """Return the most recent run directory.
 
-    Prefers the ``latest`` symlink if present; falls back to the last entry in
-    sorted run IDs. Raises ``FileNotFoundError`` if no runs exist.
+    Prefers the ``latest`` pointer (symlink or plain-text fallback file) if
+    present; otherwise falls back to the last entry in sorted run IDs.
+    Raises ``FileNotFoundError`` if no runs exist.
     """
     parent = experiment_dir(env, algo)
     latest = parent / "latest"
-    if latest.is_symlink() or latest.exists():
+    if latest.is_symlink():
         resolved = latest.resolve()
         if resolved.exists():
             return resolved
+    elif latest.is_file():
+        # Plain-text pointer file (used when the filesystem does not
+        # support symlinks, e.g. Google Drive mounted on Colab).
+        target_rel = latest.read_text().strip()
+        if target_rel:
+            resolved = (parent / target_rel).resolve()
+            if resolved.exists():
+                return resolved
     runs = list_runs(env, algo)
     if not runs:
         raise FileNotFoundError(f"No runs found for {env}/{algo}")
@@ -100,7 +109,14 @@ def latest_run(env: str, algo: str) -> Path:
 
 
 def update_latest_symlink(env: str, algo: str, run_dir: Path) -> None:
-    """Atomically point ``training_jobs/<env>/<algo>/latest`` at ``run_dir``."""
+    """Atomically point ``training_jobs/<env>/<algo>/latest`` at ``run_dir``.
+
+    On filesystems that support symlinks this creates ``latest`` as a
+    symlink. On filesystems that do not (e.g. Google Drive's FUSE mount on
+    Colab, which fails with ``OSError`` errno 95 "Operation not supported"),
+    it falls back to writing a plain-text pointer file containing the
+    relative run path. ``latest_run`` understands both forms.
+    """
     parent = experiment_dir(env, algo)
     latest = parent / "latest"
     # Use a path relative to the symlink's parent so the link stays valid
@@ -109,7 +125,13 @@ def update_latest_symlink(env: str, algo: str, run_dir: Path) -> None:
     tmp = parent / ".latest.tmp"
     if tmp.is_symlink() or tmp.exists():
         tmp.unlink()
-    tmp.symlink_to(target)
+    try:
+        tmp.symlink_to(target)
+    except OSError:
+        # Filesystem refuses symlinks; write a text pointer instead. The
+        # failed symlink_to call does not create ``tmp``, so it is safe to
+        # write to the same path directly.
+        tmp.write_text(str(target))
     os.replace(tmp, latest)
 
 
