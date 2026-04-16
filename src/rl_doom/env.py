@@ -75,8 +75,9 @@ class DoomEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(n_buttons)
         # Observation = RGB image from the screen buffer (H, W, 3).
         h, w = self.game.get_screen_height(), self.game.get_screen_width()
+        self._obs_shape: tuple[int, int, int] = (h, w, 3)
         self.observation_space = gym.spaces.Box(
-            low=0, high=255, shape=(h, w, 3), dtype=np.uint8,
+            low=0, high=255, shape=self._obs_shape, dtype=np.uint8,
         )
 
     # ------------------------------------------------------------------
@@ -92,7 +93,7 @@ class DoomEnv(gym.Env):
                 buf = buf.transpose(1, 2, 0)
             return buf
         # After episode ends the state can be None; return a black frame.
-        return np.zeros(self.observation_space.shape, dtype=np.uint8)
+        return np.zeros(self._obs_shape, dtype=np.uint8)
 
     def reset(
         self,
