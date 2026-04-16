@@ -1,0 +1,30 @@
+# Hyperparameters for PPO on the Defend the Center scenario.
+# Consumed by notebooks/03_ppo_training.ipynb and future train.py.
+
+scenario: defend_the_center
+algorithm: ppo
+
+env:
+  resize_shape: [84, 84]
+  frame_skip: 4
+  num_stack: 4
+
+agent:
+  lr: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+
+training:
+  total_steps: 200000
+  rollout_length: 2048
+  n_epochs: 4
+  batch_size: 64
+  seed: 0
+
+eval:
+  n_episodes: 10
+  eval_every: 20000

@@ -55,8 +55,13 @@ class DQNAgent:
     # ------------------------------------------------------------------
 
     def select_action(self, obs: np.ndarray, *, epsilon: float = 0.0) -> int:
+        """Select an action using epsilon-greedy over the policy net.
+
+        With probability *epsilon* a uniformly random action is returned;
+        otherwise the greedy action (argmax of Q-values) is used.
+        """
         if np.random.random() < epsilon:
-            return np.random.randint(self.n_actions)
+            return int(np.random.randint(self.n_actions))
         with torch.no_grad():
             obs_t = torch.FloatTensor(np.array(obs)).unsqueeze(0).to(self.device)
             q_values = self.policy_net(obs_t)
@@ -105,9 +110,11 @@ class DQNAgent:
     # ------------------------------------------------------------------
 
     def save(self, path: str) -> None:
+        """Save the policy network weights to *path*."""
         torch.save(self.policy_net.state_dict(), path)
 
     def load(self, path: str) -> None:
+        """Load policy network weights from *path* and sync the target net."""
         state_dict = torch.load(path, map_location=self.device, weights_only=True)
         self.policy_net.load_state_dict(state_dict)
         self.update_target()

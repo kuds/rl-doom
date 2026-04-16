@@ -29,9 +29,18 @@ class ReplayBuffer:
         next_obs: np.ndarray,
         done: bool,
     ) -> None:
+        """Append a single transition to the buffer (FIFO-evicts when full)."""
         self._buffer.append((obs, action, reward, next_obs, done))
 
     def sample(self, batch_size: int) -> dict[str, Any]:
+        """Uniformly sample *batch_size* transitions as a dict of numpy arrays.
+
+        Raises ``ValueError`` if there aren't yet *batch_size* transitions.
+        """
+        if batch_size > len(self._buffer):
+            raise ValueError(
+                f"Cannot sample {batch_size} from buffer of size {len(self._buffer)}",
+            )
         batch = random.sample(self._buffer, batch_size)
         obs, actions, rewards, next_obs, dones = zip(*batch)
         return {

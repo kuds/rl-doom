@@ -189,6 +189,7 @@ class FrameStack(gym.Wrapper):
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Reset the underlying env and fill the stack with the initial frame."""
         obs, info = self.env.reset(seed=seed, options=options)
         for _ in range(self._num_stack):
             self._frames.append(obs)
@@ -197,6 +198,7 @@ class FrameStack(gym.Wrapper):
     def step(
         self, action: int,
     ) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
+        """Step the underlying env, append the new frame, and return the stack."""
         obs, reward, terminated, truncated, info = self.env.step(action)
         self._frames.append(obs)
         return np.array(self._frames), reward, terminated, truncated, info

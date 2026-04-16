@@ -132,82 +132,78 @@ class PPOAgent:
         Returns dict with ``policy_loss``, ``value_loss``, ``entropy``,
         and ``clip_fraction``.
         """
-        obs = rollout["obs"]
-        actions = rollout["actions"]
-        old_log_probs = rollout["log_probs"]
-        values = rollout["values"]
-        rewards = rollout["rewards"]
-        dones = rollout["dones"]
-        last_value = rollout["last_value"]
-
         advantages, returns = self._compute_gae(
-            rewards, values, dones, last_value, self.gamma, self.gae_lambda,
+            rollout["rewards"],
+            rollout["values"],
+            rollout["dones"],
+            rollout["last_value"],
+            self.gamma,
+            self.gae_lambda,
         )
 
         # Normalize advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # Convert to tensors
-        obs_t = torch.FloatTensor(obs).to(self.device)
-        actions_t = torch.LongTensor(actions).to(self.device)
-        old_logp_t = torch.FloatTensor(old_log_probs).to(self.device)
-        advantages_t = torch.FloatTensor(advantages).to(self.device)
-        returns_t = torch.FloatTensor(returns).to(self.device)
+        tensors = {
+            "obs": torch.FloatTensor(rollout["obs"]).to(self.device),
+            "actions": torch.LongTensor(rollout["actions"]).to(self.device),
+            "old_logp": torch.FloatTensor(rollout["log_probs"]).to(self.device),
+            "advantages": torch.FloatTensor(advantages).to(self.device),
+            "returns": torch.FloatTensor(returns).to(self.device),
+        }
 
-        n_samples = len(obs)
-        total_policy_loss = 0.0
-        total_value_loss = 0.0
-        total_entropy = 0.0
-        total_clip_frac = 0.0
+        n_samples = len(rollout["obs"])
+        totals = {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0, "clip_fraction": 0.0}
         n_updates = 0
 
         for _ in range(n_epochs):
             indices = np.random.permutation(n_samples)
             for start in range(0, n_samples, batch_size):
-                end = start + batch_size
-                idx = indices[start:end]
-
-                mb_obs = obs_t[idx]
-                mb_actions = actions_t[idx]
-                mb_old_logp = old_logp_t[idx]
-                mb_advantages = advantages_t[idx]
-                mb_returns = returns_t[idx]
-
-                logits, values_pred = self.network(mb_obs)
-                dist = torch.distributions.Categorical(logits=logits)
-                new_logp = dist.log_prob(mb_actions)
-                entropy = dist.entropy().mean()
-
-                # Clipped surrogate objective
-                ratio = torch.exp(new_logp - mb_old_logp)
-                surr1 = ratio * mb_advantages
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * mb_advantages
-                policy_loss = -torch.min(surr1, surr2).mean()
-
-                # Value loss
-                value_loss = nn.functional.mse_loss(values_pred.squeeze(-1), mb_returns)
-
-                # Combined loss
-                loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
-
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.network.parameters(), self.max_grad_norm)
-                self.optimizer.step()
-
-                # Track stats
-                clip_frac = ((ratio - 1.0).abs() > self.clip_eps).float().mean().item()
-                total_policy_loss += policy_loss.item()
-                total_value_loss += value_loss.item()
-                total_entropy += entropy.item()
-                total_clip_frac += clip_frac
+                idx = indices[start : start + batch_size]
+                stats = self._ppo_step(tensors, idx)
+                for key, value in stats.items():
+                    totals[key] += value
                 n_updates += 1
 
+        return {key: value / n_updates for key, value in totals.items()}
+
+    def _ppo_step(
+        self,
+        tensors: dict[str, torch.Tensor],
+        idx: np.ndarray,
+    ) -> dict[str, float]:
+        """Run one PPO gradient step on a minibatch and return per-batch stats."""
+        mb_obs = tensors["obs"][idx]
+        mb_actions = tensors["actions"][idx]
+        mb_old_logp = tensors["old_logp"][idx]
+        mb_advantages = tensors["advantages"][idx]
+        mb_returns = tensors["returns"][idx]
+
+        logits, values_pred = self.network(mb_obs)
+        dist = torch.distributions.Categorical(logits=logits)
+        new_logp = dist.log_prob(mb_actions)
+        entropy = dist.entropy().mean()
+
+        # Clipped surrogate objective
+        ratio = torch.exp(new_logp - mb_old_logp)
+        surr1 = ratio * mb_advantages
+        surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * mb_advantages
+        policy_loss = -torch.min(surr1, surr2).mean()
+
+        value_loss = nn.functional.mse_loss(values_pred.squeeze(-1), mb_returns)
+        loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(self.network.parameters(), self.max_grad_norm)
+        self.optimizer.step()
+
+        clip_frac = ((ratio - 1.0).abs() > self.clip_eps).float().mean().item()
         return {
-            "policy_loss": total_policy_loss / n_updates,
-            "value_loss": total_value_loss / n_updates,
-            "entropy": total_entropy / n_updates,
-            "clip_fraction": total_clip_frac / n_updates,
+            "policy_loss": policy_loss.item(),
+            "value_loss": value_loss.item(),
+            "entropy": entropy.item(),
+            "clip_fraction": clip_frac,
         }
 
     # ------------------------------------------------------------------
@@ -215,8 +211,10 @@ class PPOAgent:
     # ------------------------------------------------------------------
 
     def save(self, path: str) -> None:
+        """Save the actor-critic network weights to *path*."""
         torch.save(self.network.state_dict(), path)
 
     def load(self, path: str) -> None:
+        """Load actor-critic network weights from *path*."""
         state_dict = torch.load(path, map_location=self.device, weights_only=True)
         self.network.load_state_dict(state_dict)

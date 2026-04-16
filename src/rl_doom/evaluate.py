@@ -7,28 +7,33 @@ from typing import Any, Callable
 
 import numpy as np
 
+from rl_doom.agents.dqn import DQNAgent
+from rl_doom.agents.ppo import PPOAgent
+
+
+def _select_action(agent: Any, obs: np.ndarray, *, epsilon: float = 0.0) -> int:
+    """Dispatch to the agent's action API based on its class."""
+    if isinstance(agent, DQNAgent):
+        return agent.select_action(obs, epsilon=epsilon)
+    if isinstance(agent, PPOAgent):
+        action, _, _ = agent.select_action(obs)
+        return action
+    raise TypeError(f"Unsupported agent type: {type(agent).__name__}")
+
 
 def evaluate_agent(
-    agent: Any,
+    agent: DQNAgent | PPOAgent,
     make_env: Callable[[], Any],
     n_episodes: int = 10,
 ) -> np.ndarray:
-    """Run the agent for *n_episodes* and return per-episode total rewards.
-
-    Automatically detects DQN (``agent.policy_net``) vs PPO
-    (``agent.network``) to call the correct action-selection API.
-    """
-    is_dqn = hasattr(agent, "policy_net")
+    """Run the agent for *n_episodes* and return per-episode total rewards."""
     env = make_env()
     rewards: list[float] = []
     for _ in range(n_episodes):
         obs, _ = env.reset()
         total_reward, done = 0.0, False
         while not done:
-            if is_dqn:
-                action = agent.select_action(obs, epsilon=0.0)
-            else:
-                action, _, _ = agent.select_action(obs)
+            action = _select_action(agent, obs)
             obs, reward, terminated, truncated, _ = env.step(action)
             total_reward += float(reward)
             done = terminated or truncated
@@ -38,7 +43,7 @@ def evaluate_agent(
 
 
 def record_episode(
-    agent: Any,
+    agent: DQNAgent | PPOAgent,
     make_env: Callable[[], Any],
     *,
     epsilon: float = 0.0,
@@ -62,7 +67,6 @@ def record_episode(
     list[np.ndarray]
         List of RGB frames (H, W, 3) suitable for display or GIF export.
     """
-    is_dqn = hasattr(agent, "policy_net")
     env = make_env()
 
     # We also need the raw RGB frames for recording.  Unwrap to the
@@ -77,10 +81,7 @@ def record_episode(
     step = 0
 
     while not done and step < max_steps:
-        if is_dqn:
-            action = agent.select_action(obs, epsilon=epsilon)
-        else:
-            action, _, _ = agent.select_action(obs)
+        action = _select_action(agent, obs, epsilon=epsilon)
         obs, _, terminated, truncated, _ = env.step(action)
         frames.append(base_env.render())
         done = terminated or truncated
@@ -130,7 +131,7 @@ def save_video(
 
 
 def record_and_save_video(
-    agent: Any,
+    agent: DQNAgent | PPOAgent,
     make_env: Callable[[], Any],
     path: str | Path,
     *,
