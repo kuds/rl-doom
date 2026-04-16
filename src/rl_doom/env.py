@@ -15,7 +15,6 @@ import gymnasium as gym
 import numpy as np
 import vizdoom
 
-
 # Mapping from friendly scenario names to ViZDoom config filenames.
 SCENARIO_MAP: dict[str, str] = {
     "basic": "basic.cfg",

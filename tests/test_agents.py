@@ -8,7 +8,6 @@ import torch
 from rl_doom.agents.dqn import DQNAgent
 from rl_doom.agents.ppo import PPOAgent
 
-
 OBS_SHAPE = (4, 84, 84)
 N_ACTIONS = 3
 
@@ -88,7 +87,8 @@ def test_ppo_compute_gae_shapes_and_sanity() -> None:
     )
     assert adv.shape == (n,)
     assert ret.shape == (n,)
-    # With all-positive rewards and zero baseline, returns should be positive & monotone-decreasing.
+    # With all-positive rewards and zero baseline, returns should be
+    # positive & monotone-decreasing.
     assert np.all(ret > 0)
     assert ret[0] >= ret[-1]
 
