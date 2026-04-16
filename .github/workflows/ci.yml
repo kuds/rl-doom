@@ -30,11 +30,14 @@ jobs:
           # skipped when the module isn't importable (see tests/conftest.py).
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install gymnasium numpy opencv-python pyyaml tensorboard matplotlib
-          pip install pytest ruff
+          pip install pytest ruff mypy
           pip install -e . --no-deps
 
       - name: Ruff lint
         run: ruff check src tests
+
+      - name: Mypy
+        run: mypy
 
       - name: Pytest
         run: pytest -v
