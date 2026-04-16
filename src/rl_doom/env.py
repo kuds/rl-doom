@@ -15,7 +15,6 @@ import gymnasium as gym
 import numpy as np
 import vizdoom
 
-
 # Mapping from friendly scenario names to ViZDoom config filenames.
 SCENARIO_MAP: dict[str, str] = {
     "basic": "basic.cfg",
@@ -76,8 +75,9 @@ class DoomEnv(gym.Env):
         self.action_space = gym.spaces.Discrete(n_buttons)
         # Observation = RGB image from the screen buffer (H, W, 3).
         h, w = self.game.get_screen_height(), self.game.get_screen_width()
+        self._obs_shape: tuple[int, int, int] = (h, w, 3)
         self.observation_space = gym.spaces.Box(
-            low=0, high=255, shape=(h, w, 3), dtype=np.uint8,
+            low=0, high=255, shape=self._obs_shape, dtype=np.uint8,
         )
 
     # ------------------------------------------------------------------
@@ -93,7 +93,7 @@ class DoomEnv(gym.Env):
                 buf = buf.transpose(1, 2, 0)
             return buf
         # After episode ends the state can be None; return a black frame.
-        return np.zeros(self.observation_space.shape, dtype=np.uint8)
+        return np.zeros(self._obs_shape, dtype=np.uint8)
 
     def reset(
         self,
@@ -115,7 +115,10 @@ class DoomEnv(gym.Env):
         obs = self._get_obs()
         return obs, reward, terminated, False, {}
 
-    def render(self) -> np.ndarray:
+    def render(self) -> np.ndarray:  # type: ignore[override]
+        # Gymnasium's base signature returns RenderFrame | list | None;
+        # we always produce an RGB ndarray, which is a valid RenderFrame
+        # but narrower than the abstract type.
         return self._get_obs()
 
     def close(self) -> None:
@@ -177,10 +180,15 @@ class FrameStack(gym.Wrapper):
         self._num_stack = num_stack
         self._frames: deque[np.ndarray] = deque(maxlen=num_stack)
 
-        low = np.repeat(env.observation_space.low[np.newaxis, ...], num_stack, axis=0)
-        high = np.repeat(env.observation_space.high[np.newaxis, ...], num_stack, axis=0)
+        base_space = env.observation_space
+        if not isinstance(base_space, gym.spaces.Box):
+            raise TypeError(
+                f"FrameStack requires a Box observation space, got {type(base_space).__name__}",
+            )
+        low = np.repeat(base_space.low[np.newaxis, ...], num_stack, axis=0)
+        high = np.repeat(base_space.high[np.newaxis, ...], num_stack, axis=0)
         self.observation_space = gym.spaces.Box(
-            low=low, high=high, dtype=env.observation_space.dtype,
+            low=low, high=high, dtype=base_space.dtype,  # type: ignore[arg-type]
         )
 
     def reset(
@@ -189,6 +197,7 @@ class FrameStack(gym.Wrapper):
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Reset the underlying env and fill the stack with the initial frame."""
         obs, info = self.env.reset(seed=seed, options=options)
         for _ in range(self._num_stack):
             self._frames.append(obs)
@@ -197,6 +206,7 @@ class FrameStack(gym.Wrapper):
     def step(
         self, action: int,
     ) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
+        """Step the underlying env, append the new frame, and return the stack."""
         obs, reward, terminated, truncated, info = self.env.step(action)
         self._frames.append(obs)
         return np.array(self._frames), reward, terminated, truncated, info

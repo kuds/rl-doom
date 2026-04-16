@@ -18,7 +18,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-
 # ---------------------------------------------------------------------------
 # Google Drive persistence
 # ---------------------------------------------------------------------------
@@ -37,7 +36,7 @@ def setup_google_drive(
     if subdirs is None:
         subdirs = ["checkpoints", "logs", "figures", "media", "runs"]
 
-    from google.colab import drive  # type: ignore[import-unresolved]
+    from google.colab import drive
 
     drive.mount("/content/drive")
     os.makedirs(drive_root, exist_ok=True)
