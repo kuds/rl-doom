@@ -114,7 +114,10 @@ class DoomEnv(gym.Env):
         obs = self._get_obs()
         return obs, reward, terminated, False, {}
 
-    def render(self) -> np.ndarray:
+    def render(self) -> np.ndarray:  # type: ignore[override]
+        # Gymnasium's base signature returns RenderFrame | list | None;
+        # we always produce an RGB ndarray, which is a valid RenderFrame
+        # but narrower than the abstract type.
         return self._get_obs()
 
     def close(self) -> None:
@@ -176,10 +179,15 @@ class FrameStack(gym.Wrapper):
         self._num_stack = num_stack
         self._frames: deque[np.ndarray] = deque(maxlen=num_stack)
 
-        low = np.repeat(env.observation_space.low[np.newaxis, ...], num_stack, axis=0)
-        high = np.repeat(env.observation_space.high[np.newaxis, ...], num_stack, axis=0)
+        base_space = env.observation_space
+        if not isinstance(base_space, gym.spaces.Box):
+            raise TypeError(
+                f"FrameStack requires a Box observation space, got {type(base_space).__name__}",
+            )
+        low = np.repeat(base_space.low[np.newaxis, ...], num_stack, axis=0)
+        high = np.repeat(base_space.high[np.newaxis, ...], num_stack, axis=0)
         self.observation_space = gym.spaces.Box(
-            low=low, high=high, dtype=env.observation_space.dtype,
+            low=low, high=high, dtype=base_space.dtype,  # type: ignore[arg-type]
         )
 
     def reset(
