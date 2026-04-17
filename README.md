@@ -29,7 +29,7 @@ rl-doom/
 │   ├── replay_buffer.py                   # Experience replay for DQN
 │   ├── train.py                           # CLI training entry point
 │   └── evaluate.py                        # Evaluation & episode recording
-├── configs/                               # YAML hyperparameter configs per scenario
+├── configs/                               # YAML hyperparameter configs per (algorithm, scenario) pair
 ├── pyproject.toml
 └── PLAN.md
 ```
@@ -61,14 +61,14 @@ There is also a separate **Google Drive** cell you can uncomment to persist arti
 Run the notebooks in order:
 
 1. **01 — Environment Exploration**: Verify ViZDoom installation, visualize observations, run random baseline
-2. **02 — DQN Training**: Train Double DQN on Basic (100k steps), plot learning curves, hyperparameter sweep
-3. **03 — PPO Training**: Train PPO on Deadly Corridor and Defend the Center (200k steps each)
+2. **02 — DQN Training**: Train Double DQN on Basic (100k steps), plot learning curves, hyperparameter sweep. DQN configs for Deadly Corridor and Defend the Center (200k steps) are also available in `configs/`.
+3. **03 — PPO Training**: Train PPO on Deadly Corridor and Defend the Center (200k steps each). A matching PPO config for Basic (100k steps) is also available in `configs/`.
 4. **04 — Analysis**: Cross-scenario comparison table, multi-seed evaluation, saliency maps, GIF generation
 
 ### CLI
 
 ```bash
-python -m rl_doom.train --config configs/basic.yaml
+python -m rl_doom.train --config configs/dqn_basic.yaml
 ```
 
 ## Algorithms
