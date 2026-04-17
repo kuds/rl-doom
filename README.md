@@ -4,12 +4,13 @@ Reinforcement learning agents that learn to play Doom using [ViZDoom](https://gi
 
 ## Scenarios
 
-| Scenario | Description | Algorithm |
-|----------|-------------|-----------|
-| **Basic** | Single room — shoot a monster | DQN |
-| **Deadly Corridor** | Navigate a corridor with enemies | PPO |
-| **Defend the Center** | Survive waves of enemies | PPO |
-| **Deathmatch** | Full combat (future) | — |
+Every scenario below has a matching config for both algorithms in `configs/<algo>_<scenario>.yaml`.
+
+| Scenario | Description | Step budget |
+|----------|-------------|-------------|
+| **Basic** | Single room — shoot a stationary monster | 100k |
+| **Deadly Corridor** | Run a gauntlet of enemies to reach armor | 200k |
+| **Defend the Center** | Stationary 360° defense against waves | 200k |
 
 ## Project Structure
 
@@ -17,8 +18,8 @@ Reinforcement learning agents that learn to play Doom using [ViZDoom](https://gi
 rl-doom/
 ├── notebooks/
 │   ├── 01_environment_exploration.ipynb   # Env setup, wrappers, random baseline
-│   ├── 02_dqn_training.ipynb              # Double DQN on Basic scenario
-│   ├── 03_ppo_training.ipynb              # PPO on Deadly Corridor & Defend the Center
+│   ├── 02_dqn_training.ipynb              # Double DQN training + LR sweep
+│   ├── 03_ppo_training.ipynb              # PPO training loop
 │   └── 04_analysis_and_results.ipynb      # Cross-scenario comparison, saliency, GIFs
 ├── src/rl_doom/                           # Core library
 │   ├── env.py                             # Gymnasium wrappers (DoomEnv, FrameStack, etc.)
@@ -29,7 +30,7 @@ rl-doom/
 │   ├── replay_buffer.py                   # Experience replay for DQN
 │   ├── train.py                           # CLI training entry point
 │   └── evaluate.py                        # Evaluation & episode recording
-├── configs/                               # YAML hyperparameter configs per scenario
+├── configs/                               # YAML hyperparameter configs per (algorithm, scenario) pair
 ├── pyproject.toml
 └── PLAN.md
 ```
@@ -61,14 +62,17 @@ There is also a separate **Google Drive** cell you can uncomment to persist arti
 Run the notebooks in order:
 
 1. **01 — Environment Exploration**: Verify ViZDoom installation, visualize observations, run random baseline
-2. **02 — DQN Training**: Train Double DQN on Basic (100k steps), plot learning curves, hyperparameter sweep
-3. **03 — PPO Training**: Train PPO on Deadly Corridor and Defend the Center (200k steps each)
+2. **02 — DQN Training**: Train Double DQN, plot learning curves, run a hyperparameter sweep
+3. **03 — PPO Training**: Train PPO, log policy/value losses and entropy
 4. **04 — Analysis**: Cross-scenario comparison table, multi-seed evaluation, saliency maps, GIF generation
 
 ### CLI
 
+Pick any `(algorithm, scenario)` pair:
+
 ```bash
-python -m rl_doom.train --config configs/basic.yaml
+python -m rl_doom.train --config configs/dqn_basic.yaml
+python -m rl_doom.train --config configs/ppo_deadly_corridor.yaml
 ```
 
 ## Algorithms
@@ -128,11 +132,9 @@ Launch TensorBoard to monitor training in real time:
 tensorboard --logdir runs/
 ```
 
-### Shared Utilities
+## Shared Utilities
 
-`src/rl_doom/utils.py` provides reusable helpers for Google Drive persistence,
-reproducibility metadata collection, smoothed plotting, training timers, and
-checkpoint saving with metadata.
+`src/rl_doom/utils.py` provides reusable helpers for Google Drive persistence, reproducibility metadata collection, smoothed plotting, training timers, and checkpoint saving with metadata.
 
 ## Blog Posts
 - [Advanced Architectures and Methodologies in Visual Reinforcement Learning: A Technical Analysis of the ViZDoom Platform](https://www.findingtheta.com/blog/advanced-architectures-and-methodologies-in-visual-reinforcement-learning-a-technical-analysis-of-the-vizdoom-platform)

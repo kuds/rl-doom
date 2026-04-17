@@ -1,7 +1,8 @@
-# Hyperparameters for PPO on the Deadly Corridor scenario.
-# Consumed by notebooks/03_ppo_training.ipynb and future train.py.
+# Hyperparameters for PPO on the Basic scenario.
+# Paired with configs/dqn_basic.yaml for same-scenario algorithm comparison.
+# Budget matches dqn_basic.yaml (100k steps) for a fair head-to-head.
 
-scenario: deadly_corridor
+scenario: basic
 algorithm: ppo
 
 env:
@@ -19,7 +20,7 @@ agent:
   max_grad_norm: 0.5
 
 training:
-  total_steps: 200000
+  total_steps: 100000
   rollout_length: 2048
   n_epochs: 4
   batch_size: 64
@@ -27,4 +28,4 @@ training:
 
 eval:
   n_episodes: 10
-  eval_every: 20000
+  eval_every: 10000

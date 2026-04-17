@@ -1,7 +1,8 @@
-# Hyperparameters for PPO on the Defend the Center scenario.
+# Hyperparameters for PPO on the Deadly Corridor scenario.
+# Paired with configs/dqn_deadly_corridor.yaml for same-scenario algorithm comparison.
 # Consumed by notebooks/03_ppo_training.ipynb and future train.py.
 
-scenario: defend_the_center
+scenario: deadly_corridor
 algorithm: ppo
 
 env:

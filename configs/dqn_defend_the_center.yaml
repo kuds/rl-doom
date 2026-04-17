@@ -1,0 +1,37 @@
+# Hyperparameters for Double DQN on the Defend the Center scenario.
+# Paired with configs/ppo_defend_the_center.yaml for same-scenario algorithm comparison.
+# Budget matches ppo_defend_the_center.yaml (200k steps) for a fair head-to-head.
+# Buffer and epsilon schedule are scaled up vs. dqn_basic.yaml to account for
+# the longer survival horizon.
+
+scenario: defend_the_center
+algorithm: dqn
+
+env:
+  resize_shape: [84, 84]
+  frame_skip: 4
+  num_stack: 4
+
+agent:
+  lr: 1.0e-4
+  gamma: 0.99
+
+replay_buffer:
+  capacity: 100000
+  warmup_steps: 2000
+
+training:
+  total_steps: 200000
+  batch_size: 32
+  target_update_interval: 1000
+  train_every: 4
+  seed: 0
+
+exploration:
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay_steps: 100000
+
+eval:
+  n_episodes: 10
+  eval_every: 20000

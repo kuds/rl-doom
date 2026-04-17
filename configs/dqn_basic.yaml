@@ -1,4 +1,5 @@
 # Hyperparameters for Double DQN on the Basic scenario.
+# Paired with configs/ppo_basic.yaml for same-scenario algorithm comparison.
 # Consumed by notebooks/02_dqn_training.ipynb and future train.py.
 
 scenario: basic

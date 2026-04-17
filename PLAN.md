@@ -19,9 +19,12 @@ rl-doom/
 ├── pyproject.toml              # Dependencies & project metadata
 ├── .gitignore
 ├── configs/
-│   ├── basic.yaml              # Scenario-specific hyperparams
-│   ├── deadly_corridor.yaml
-│   └── deathmatch.yaml
+│   ├── dqn_basic.yaml               # <algo>_<scenario>.yaml per pair
+│   ├── ppo_basic.yaml
+│   ├── dqn_deadly_corridor.yaml
+│   ├── ppo_deadly_corridor.yaml
+│   ├── dqn_defend_the_center.yaml
+│   └── ppo_defend_the_center.yaml
 ├── src/
 │   └── rl_doom/
 │       ├── __init__.py
@@ -131,7 +134,7 @@ Standard Nature-DQN architecture, proven for Doom-scale visual inputs.
 - Periodic checkpoint saving (model + optimizer state)
 - Resume from checkpoint support
 - Seed control for reproducibility
-- CLI via `python -m rl_doom.train --config configs/basic.yaml`
+- CLI via `python -m rl_doom.train --config configs/dqn_basic.yaml`
 
 ---
 
