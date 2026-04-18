@@ -22,7 +22,7 @@ import csv
 import platform
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -331,14 +331,14 @@ def _record_video(
     env.close()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # imageio.mimsave's type stub is overly strict about list invariance,
-    # but it accepts a plain list of ndarrays at runtime.
+    # imageio.mimsave's stub varies across versions; cast sidesteps variance.
+    imgs = cast(Any, frames)
     try:
-        imageio.mimsave(out_path, frames, fps=fps)  # type: ignore[arg-type]
+        imageio.mimsave(out_path, imgs, fps=fps)
         return out_path
     except Exception as exc:  # noqa: BLE001
         fallback = out_path.with_suffix(".gif")
-        imageio.mimsave(fallback, frames, fps=fps, loop=0)  # type: ignore[arg-type]
+        imageio.mimsave(fallback, imgs, fps=fps, loop=0)
         print(f"[video] mp4 encode failed ({exc}); wrote GIF fallback: {fallback}")
         return fallback
 

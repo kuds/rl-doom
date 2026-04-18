@@ -10,7 +10,7 @@ capability, so callers can hand either one to :func:`evaluate_agent` and
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import numpy as np
 
@@ -126,18 +126,20 @@ def save_video(
     path.parent.mkdir(parents=True, exist_ok=True)
     ext = path.suffix.lower()
 
-    # imageio.mimsave's type stub is overly strict about list invariance,
-    # but it accepts a plain list of ndarrays at runtime.
+    # ``imageio.mimsave``'s typing varies across stub versions (one variant
+    # flags the list as invariant, another is permissive). Cast to ``Any``
+    # so the call typechecks consistently everywhere.
+    imgs = cast(Any, frames)
     if ext == ".gif":
-        imageio.mimsave(path, frames, fps=fps, loop=0)  # type: ignore[arg-type]
+        imageio.mimsave(path, imgs, fps=fps, loop=0)
         return path
 
     try:
-        imageio.mimsave(path, frames, fps=fps)  # type: ignore[arg-type]
+        imageio.mimsave(path, imgs, fps=fps)
         return path
     except Exception as exc:  # noqa: BLE001 — fall back on any encoder error
         fallback = path.with_suffix(".gif")
-        imageio.mimsave(fallback, frames, fps=fps, loop=0)  # type: ignore[arg-type]
+        imageio.mimsave(fallback, imgs, fps=fps, loop=0)
         print(
             f"Warning: video encoding to {path.suffix} failed ({exc}). "
             f"Saved GIF fallback to {fallback}"
