@@ -253,7 +253,7 @@ def test_snapshot_callback_fires_on_interval(tmp_path: Path) -> None:
     pool = OpponentPool(tmp_path / "opponents")
     model = _FakeModel()
     cb = SelfPlaySnapshotCallback(pool, snapshot_freq=100)
-    cb.model = model  # type: ignore[assignment]
+    cb.model = model  # type: ignore[assignment, unused-ignore]
 
     # Simulate SB3 stepping through timesteps. ``_on_step`` reads
     # ``num_timesteps`` off the callback (SB3 increments it externally).
@@ -278,7 +278,7 @@ def test_snapshot_callback_evicts_oldest_beyond_max_pool_size(
     pool = OpponentPool(tmp_path / "opponents")
     model = _FakeModel()
     cb = SelfPlaySnapshotCallback(pool, snapshot_freq=10, max_pool_size=2)
-    cb.model = model  # type: ignore[assignment]
+    cb.model = model  # type: ignore[assignment, unused-ignore]
 
     for step in (10, 20, 30, 40):
         cb.num_timesteps = step

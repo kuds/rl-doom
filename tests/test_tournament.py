@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -174,7 +175,7 @@ def test_play_match_reports_frags_in_canonical_seat_order(tmp_path: Path) -> Non
         _ScriptedPolicy("B"),
         name_a="A",
         name_b="B",
-        env=env,
+        env=cast(Any, env),
     )
     assert result.player_a == "A"
     assert result.player_b == "B"
@@ -211,7 +212,7 @@ def test_play_match_max_steps_breaks_before_timelimit() -> None:
         _ScriptedPolicy("B"),
         name_a="A",
         name_b="B",
-        env=env,
+        env=cast(Any, env),
         max_steps=3,
     )
     assert result.steps == 3
@@ -272,17 +273,17 @@ def test_run_round_robin_yields_pair_count_matches_per_pair(tmp_path: Path) -> N
         return 0, None
 
     monkey_orig = _ScriptedPolicy.predict
-    _ScriptedPolicy.predict = _predict  # type: ignore[assignment]
+    _ScriptedPolicy.predict = _predict  # type: ignore[method-assign]
     try:
         results = tourney_mod.run_round_robin(
             ckpts,
             matches_per_pair=2,
             flip_seats=True,
             loader=_loader,
-            env_factory=lambda **_kw: seating_env,
+            env_factory=cast(Any, lambda **_kw: seating_env),
         )
     finally:
-        _ScriptedPolicy.predict = monkey_orig  # type: ignore[assignment]
+        _ScriptedPolicy.predict = monkey_orig  # type: ignore[method-assign]
 
     # 4 choose 2 = 6 pairs, 2 matches each = 12 matches.
     assert len(results) == 12
