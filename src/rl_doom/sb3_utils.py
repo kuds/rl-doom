@@ -19,6 +19,7 @@ Design choices:
 from __future__ import annotations
 
 import csv
+import json
 import platform
 import time
 from pathlib import Path
@@ -29,7 +30,11 @@ import numpy as np
 import torch
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import (
+    BaseCallback,
+    CheckpointCallback,
+    EvalCallback,
+)
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import VecNormalize
 
@@ -82,6 +87,7 @@ def _build_model(
     tensorboard_log: str | Path,
     device: str | torch.device,
     seed: int,
+    verbose: int = 0,
 ) -> BaseAlgorithm:
     """Instantiate a PPO or DQN model from a flat hyperparam dict."""
     algo_norm = algo.lower()
@@ -102,7 +108,7 @@ def _build_model(
             tensorboard_log=str(tensorboard_log),
             device=device,
             seed=seed,
-            verbose=0,
+            verbose=verbose,
         )
     if algo_norm == "dqn":
         return DQN(
@@ -124,9 +130,81 @@ def _build_model(
             tensorboard_log=str(tensorboard_log),
             device=device,
             seed=seed,
-            verbose=0,
+            verbose=verbose,
         )
     raise ValueError(f"Unknown algo {algo!r}; expected 'ppo' or 'dqn'.")
+
+
+# ---------------------------------------------------------------------------
+# Termination tracking
+# ---------------------------------------------------------------------------
+
+
+class TerminationTracker(BaseCallback):
+    """Aggregate per-episode termination reasons across the vec env.
+
+    ``DoomEnv`` writes ``termination_reason``/``episode_tics``/``final_health``
+    into the ``info`` dict when an episode ends. SB3's ``Monitor`` wrapper
+    preserves the raw info when the sub-env finishes (it only adds an
+    ``episode`` key), so we can read ``info["termination_reason"]`` directly
+    on the step where ``dones[i]`` is True.
+
+    The callback maintains running counts plus a compact history of the
+    per-episode metadata (termination reason, length in tics, final health),
+    so downstream code can build a termination timeline or pivot by
+    reason × step.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(verbose=0)
+        self.counts: dict[str, int] = {}
+        self.episodes: list[dict[str, Any]] = []
+
+    def _on_step(self) -> bool:
+        dones = self.locals.get("dones")
+        infos = self.locals.get("infos")
+        if dones is None or infos is None:
+            return True
+        for done, info in zip(dones, infos):
+            if not done:
+                continue
+            reason = info.get("termination_reason", "unknown")
+            self.counts[reason] = self.counts.get(reason, 0) + 1
+            self.episodes.append(
+                {
+                    "step": int(self.num_timesteps),
+                    "reason": reason,
+                    "episode_tics": info.get("episode_tics"),
+                    "final_health": info.get("final_health"),
+                },
+            )
+        return True
+
+
+def _write_termination_report(
+    tracker: TerminationTracker, metrics_dir: Path,
+) -> None:
+    """Persist termination counts + per-episode records to ``metrics/``."""
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    total = sum(tracker.counts.values())
+    report: dict[str, Any] = {
+        "total_episodes": total,
+        "counts": tracker.counts,
+        "fractions": {
+            k: (v / total if total else 0.0) for k, v in tracker.counts.items()
+        },
+    }
+    (metrics_dir / "termination_counts.json").write_text(
+        json.dumps(report, indent=2),
+    )
+    if tracker.episodes:
+        with (metrics_dir / "termination_episodes.csv").open("w", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["step", "reason", "episode_tics", "final_health"],
+            )
+            writer.writeheader()
+            for row in tracker.episodes:
+                writer.writerow(row)
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +442,7 @@ def train_sb3(
     record_video: bool = True,
     video_fps: int = 20,
     device: str | torch.device | None = None,
+    verbose: int = 0,
     on_complete: Callable[[Path], None] | None = None,
 ) -> dict[str, Any]:
     """Train a single SB3 model end-to-end and write *all* artifacts now.
@@ -384,6 +463,9 @@ def train_sb3(
 
     Parameters
     ----------
+    verbose :
+        Forwarded to the SB3 model and its callbacks. Defaults to ``0``
+        (silent) — set to ``1`` for rollout/eval logs, ``2`` for debug.
     on_complete :
         Optional hook invoked with ``run_dir`` after all artifacts are written
         (e.g. to display the video in a Jupyter cell).
@@ -443,6 +525,7 @@ def train_sb3(
         tensorboard_log=tb_dir,
         device=device,
         seed=seed,
+        verbose=verbose,
     )
     # Force CSV + TensorBoard output so we can rebuild plots post-hoc. SB3's
     # ``configure`` writes both formats into the same folder, so we route
@@ -450,6 +533,7 @@ def train_sb3(
     # there when building learning-curve figures.
     model.set_logger(configure(str(tb_dir), ["stdout", "csv", "tensorboard"]))
 
+    termination_tracker = TerminationTracker()
     callbacks = [
         EvalCallback(
             eval_env,
@@ -459,14 +543,15 @@ def train_sb3(
             n_eval_episodes=eval_episodes,
             deterministic=True,
             render=False,
-            verbose=0,
+            verbose=verbose,
         ),
         CheckpointCallback(
             save_freq=max(checkpoint_freq // max(n_envs, 1), 1),
             save_path=str(ckpt_dir),
             name_prefix="step",
-            verbose=0,
+            verbose=verbose,
         ),
+        termination_tracker,
     ]
 
     # --- train --------------------------------------------------------
@@ -495,6 +580,7 @@ def train_sb3(
     progress = _load_progress_csv(tb_dir / "progress.csv")
     episodes = _collect_episode_stats(monitor_dir)
     evaluations = _load_evaluations(run_dir)
+    _write_termination_report(termination_tracker, metrics_dir)
 
     np.savez(
         metrics_dir / "training.npz",

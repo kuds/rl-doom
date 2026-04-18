@@ -59,6 +59,16 @@ def _load_metrics(run_dir: Path) -> dict[str, Any]:
     return {}
 
 
+def _load_termination_report(run_dir: Path) -> dict[str, Any]:
+    path = run_dir / "metrics" / "termination_counts.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (ValueError, OSError):
+            return {}
+    return {}
+
+
 def _best_eval(eval_arr: np.ndarray) -> tuple | None:
     if eval_arr.ndim != 2 or eval_arr.shape[0] == 0:
         return None
@@ -71,6 +81,7 @@ def generate_run_summary(run_dir: Path) -> str:
     run_dir = Path(run_dir)
     cfg = _load_config(run_dir)
     metrics = _load_metrics(run_dir)
+    terminations = _load_termination_report(run_dir)
 
     env_name = cfg.get("env", run_dir.parents[1].name)
     algo_name = cfg.get("algo", run_dir.parents[0].name)
@@ -191,6 +202,27 @@ def generate_run_summary(run_dir: Path) -> str:
             f"  Reward:         {best_mean:.2f} +/- {best_std:.2f}",
             f"  Ep length:      {best_len_str}",
         ]
+
+    counts = terminations.get("counts") or {}
+    if counts:
+        total = terminations.get("total_episodes", sum(counts.values())) or 0
+        lines += [
+            "",
+            "Episode Terminations",
+            "-" * 40,
+            f"  Total:          {_fmt_number(total)}",
+        ]
+        # Stable ordering: goal_reached first (the "win"), then death,
+        # timeout, then anything else alphabetically.
+        priority = {"goal_reached": 0, "death": 1, "timeout": 2}
+        ordered = sorted(
+            counts.items(), key=lambda kv: (priority.get(kv[0], 99), kv[0]),
+        )
+        for reason, count in ordered:
+            frac = (count / total) if total else 0.0
+            lines.append(
+                f"  {reason:14s} {count:>6}  ({frac * 100:5.1f}%)",
+            )
 
     lines.append("")
     return "\n".join(lines)

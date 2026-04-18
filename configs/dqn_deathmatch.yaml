@@ -1,0 +1,38 @@
+# Hyperparameters for DQN (stable-baselines3, CnnPolicy) on Deathmatch.
+# Paired with configs/ppo_deathmatch.yaml for same-scenario algorithm comparison.
+# Deathmatch is the hardest scenario in this repo: it combines navigation,
+# target acquisition, and combat, so we lift the buffer size and step budget
+# above defend_the_center / deadly_corridor.
+
+scenario: deathmatch
+algorithm: dqn
+seed: 42
+
+env:
+  resize_shape: [84, 84]
+  frame_skip: 4
+  num_stack: 4
+  n_envs: 1
+
+hyperparams:
+  lr: 1.0e-4
+  buffer_size: 300000
+  learning_starts: 20000
+  batch_size: 64
+  tau: 1.0
+  gamma: 0.99
+  train_freq: 4
+  gradient_steps: 1
+  target_update_interval: 1000
+  exploration_fraction: 0.3
+  eps_start: 1.0
+  eps_end: 0.05
+  max_grad_norm: 10.0
+
+training:
+  total_timesteps: 1000000
+  checkpoint_freq: 100000
+
+eval:
+  eval_freq: 25000
+  n_episodes: 10

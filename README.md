@@ -11,6 +11,7 @@ Every scenario below has a matching config for both algorithms in `configs/<algo
 | **Basic** | Single room — shoot a stationary monster | 100k |
 | **Deadly Corridor** | Run a gauntlet of enemies to reach armor | 200k |
 | **Defend the Center** | Stationary 360° defense against waves | 200k |
+| **Deathmatch** | Full free-for-all map: navigate, aim, and fight | 1M–2M |
 
 ## Project Structure
 

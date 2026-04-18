@@ -76,7 +76,42 @@ SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
         ["TURN_LEFT", "ATTACK"],
         ["TURN_RIGHT", "ATTACK"],
     ],
+    "deathmatch": [
+        # Deathmatch needs both navigation and combat. We restrict to the
+        # binary movement/attack buttons and skip the delta + weapon-select
+        # buttons in deathmatch.cfg — delta buttons expect continuous values
+        # rather than a 0/1 press, and weapon switching adds a large branching
+        # factor that's better left for a policy with a more expressive
+        # action space. SPEED is included so the agent can run while chasing.
+        ["MOVE_FORWARD"],
+        ["MOVE_BACKWARD"],
+        ["TURN_LEFT"],
+        ["TURN_RIGHT"],
+        ["MOVE_LEFT"],
+        ["MOVE_RIGHT"],
+        ["ATTACK"],
+        # Fire while moving/turning to track and engage opponents.
+        ["MOVE_FORWARD", "ATTACK"],
+        ["MOVE_LEFT", "ATTACK"],
+        ["MOVE_RIGHT", "ATTACK"],
+        ["TURN_LEFT", "ATTACK"],
+        ["TURN_RIGHT", "ATTACK"],
+        # Navigate while aiming.
+        ["MOVE_FORWARD", "TURN_LEFT"],
+        ["MOVE_FORWARD", "TURN_RIGHT"],
+        # Sprint for closing distance / escaping.
+        ["SPEED", "MOVE_FORWARD"],
+        ["SPEED", "MOVE_FORWARD", "ATTACK"],
+    ],
 }
+
+
+# Per-scenario default difficulty (Doom skill 1..5). ``None``/unset means
+# "use whatever ``doom_skill`` is baked into the scenario's .cfg" (typically 3
+# — "Hurt me plenty", which is also ViZDoom's built-in DoomGame default).
+# Overriding here keeps train / eval / video / analysis envs in lock-step
+# without every call site having to pass a kwarg.
+SCENARIO_DEFAULT_SKILL: dict[str, int] = {}
 
 
 class DoomEnv(gym.Env):
@@ -91,6 +126,10 @@ class DoomEnv(gym.Env):
         when using the external ``SkipFrame`` wrapper.
     render_mode : str | None
         Not used directly, kept for Gymnasium compatibility.
+    doom_skill : int | None
+        ViZDoom difficulty (1..5). ``None`` (default) picks the scenario's
+        entry in :data:`SCENARIO_DEFAULT_SKILL` if one exists, otherwise
+        leaves the cfg's own default untouched.
     """
 
     metadata = {"render_modes": ["rgb_array"]}
@@ -101,6 +140,7 @@ class DoomEnv(gym.Env):
         frame_skip: int = 1,
         render_mode: str | None = None,
         use_compound_actions: bool = True,
+        doom_skill: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -116,7 +156,23 @@ class DoomEnv(gym.Env):
         self.game.set_window_visible(False)
         self.game.set_screen_format(vizdoom.ScreenFormat.RGB24)
         self.game.set_screen_resolution(vizdoom.ScreenResolution.RES_320X240)
+
+        skill = doom_skill if doom_skill is not None else SCENARIO_DEFAULT_SKILL.get(scenario)
+        if skill is not None:
+            if not 1 <= skill <= 5:
+                raise ValueError(
+                    f"doom_skill must be in [1, 5], got {skill!r}"
+                )
+            self.game.set_doom_skill(skill)
+        self._doom_skill = skill
+
         self.game.init()
+
+        # Cache the scenario's episode timeout (in game tics) so we can
+        # classify terminations as death/timeout/goal_reached in ``step``.
+        # A value of 0 means "no timeout" (agent must reach a terminal
+        # state defined by the scenario's ACS script).
+        self._episode_timeout = int(self.game.get_episode_timeout())
 
         self._frame_skip = frame_skip
         n_buttons = self.game.get_available_buttons_size()
@@ -125,8 +181,8 @@ class DoomEnv(gym.Env):
         # Prefer the curated compound action set for this scenario when one is
         # registered; fall back to the legacy one-hot layout otherwise (or
         # when the caller opts out). Falling back preserves backward
-        # compatibility for scenarios we haven't tuned yet (deathmatch,
-        # health_gathering, my_way_home, predict_position).
+        # compatibility for scenarios we haven't tuned yet (health_gathering,
+        # my_way_home, predict_position).
         curated = SCENARIO_ACTION_SETS.get(scenario) if use_compound_actions else None
         if curated is not None:
             name_to_idx = {name: i for i, name in enumerate(button_names)}
@@ -189,7 +245,32 @@ class DoomEnv(gym.Env):
         reward = self.game.make_action(self._actions[action], self._frame_skip)
         terminated = self.game.is_episode_finished()
         obs = self._get_obs()
-        return obs, reward, terminated, False, {}
+        info: dict[str, Any] = {}
+        if terminated:
+            info["termination_reason"] = self._classify_termination()
+            info["episode_tics"] = int(self.game.get_episode_time())
+            try:
+                info["final_health"] = float(
+                    self.game.get_game_variable(vizdoom.GameVariable.HEALTH),
+                )
+            except Exception:  # noqa: BLE001 — game var may be unavailable
+                info["final_health"] = None
+        return obs, reward, terminated, False, info
+
+    def _classify_termination(self) -> str:
+        """Label why the current episode ended.
+
+        * ``"death"``     — the player died (health <= 0 or dead flag set).
+        * ``"timeout"``   — the scenario's ``episode_timeout`` elapsed.
+        * ``"goal_reached"`` — the ACS script ended the episode any other
+          way, e.g. picking up the green vest at the end of Deadly Corridor.
+        """
+        if self.game.is_player_dead():
+            return "death"
+        tic = int(self.game.get_episode_time())
+        if self._episode_timeout > 0 and tic >= self._episode_timeout:
+            return "timeout"
+        return "goal_reached"
 
     def render(self) -> np.ndarray:  # type: ignore[override]
         # Gymnasium's base signature returns RenderFrame | list | None;
@@ -300,6 +381,7 @@ def make_wrapped_env(
     frame_skip: int = 4,
     num_stack: int = 4,
     use_compound_actions: bool = True,
+    doom_skill: int | None = None,
 ) -> gym.Env:
     """Build the standard Atari-style preprocessing pipeline for a ViZDoom scenario.
 
@@ -311,8 +393,16 @@ def make_wrapped_env(
     into the curated compound action set for the scenario — see
     :data:`SCENARIO_ACTION_SETS`. Pass ``False`` to keep the legacy one-per-
     button layout (useful when comparing against older runs).
+
+    ``doom_skill`` (default None) forwards to :class:`DoomEnv`; passing
+    ``None`` lets the scenario's :data:`SCENARIO_DEFAULT_SKILL` entry (or
+    the cfg default) take effect.
     """
-    env: gym.Env = DoomEnv(scenario=scenario, use_compound_actions=use_compound_actions)
+    env: gym.Env = DoomEnv(
+        scenario=scenario,
+        use_compound_actions=use_compound_actions,
+        doom_skill=doom_skill,
+    )
     env = ResizeObservation(env, shape=resize_shape)
     env = SkipFrame(env, skip=frame_skip)
     env = FrameStack(env, num_stack=num_stack)
@@ -334,6 +424,7 @@ def make_sb3_env(
     frame_skip: int = 4,
     num_stack: int = 4,
     use_compound_actions: bool = True,
+    doom_skill: int | None = None,
 ):
     """Build a Stable-Baselines3 ``DummyVecEnv`` for a ViZDoom scenario.
 
@@ -369,6 +460,7 @@ def make_sb3_env(
                 frame_skip=frame_skip,
                 num_stack=num_stack,
                 use_compound_actions=use_compound_actions,
+                doom_skill=doom_skill,
             )
             # Seed the env deterministically per worker.
             env.reset(seed=seed + idx)
