@@ -235,3 +235,66 @@ def make_wrapped_env(
     env = SkipFrame(env, skip=frame_skip)
     env = FrameStack(env, num_stack=num_stack)
     return env
+
+
+# ======================================================================
+# Stable-Baselines3 integration
+# ======================================================================
+
+
+def make_sb3_env(
+    scenario: str,
+    *,
+    n_envs: int = 1,
+    seed: int = 0,
+    monitor_dir: str | None = None,
+    resize_shape: tuple[int, int] = (84, 84),
+    frame_skip: int = 4,
+    num_stack: int = 4,
+):
+    """Build a Stable-Baselines3 ``DummyVecEnv`` for a ViZDoom scenario.
+
+    We intentionally always use ``DummyVecEnv`` (sequential in-process rollouts)
+    instead of ``SubprocVecEnv``: ViZDoom spawns a native ``vizdoom`` process per
+    env under the hood, and Colab's IPython runtime does not play well with
+    Python-level ``multiprocessing`` forks/spawns (daemon thread conflicts,
+    cleanup errors at shutdown). ``DummyVecEnv`` sidesteps all of that.
+
+    Each underlying env is wrapped in :class:`stable_baselines3.common.monitor.Monitor`
+    when ``monitor_dir`` is provided, so per-episode returns/lengths are
+    recorded to CSV and surfaced via ``model.ep_info_buffer``.
+
+    Observations are ``(num_stack, H, W)`` ``uint8`` frames (channels-first),
+    which SB3's ``CnnPolicy`` consumes directly — no ``VecTransposeImage``
+    wrapper needed.
+    """
+    # Imports are deferred so ``rl_doom.env`` stays importable in environments
+    # without Stable-Baselines3 installed (e.g. unit tests for DoomEnv only).
+    from pathlib import Path
+
+    from stable_baselines3.common.monitor import Monitor
+    from stable_baselines3.common.vec_env import DummyVecEnv
+
+    if monitor_dir is not None:
+        Path(monitor_dir).mkdir(parents=True, exist_ok=True)
+
+    def _thunk(idx: int):
+        def _make() -> gym.Env:
+            env = make_wrapped_env(
+                scenario,
+                resize_shape=resize_shape,
+                frame_skip=frame_skip,
+                num_stack=num_stack,
+            )
+            # Seed the env deterministically per worker.
+            env.reset(seed=seed + idx)
+            if monitor_dir is not None:
+                env = Monitor(
+                    env,
+                    filename=str(Path(monitor_dir) / f"monitor_{idx}"),
+                )
+            return env
+
+        return _make
+
+    return DummyVecEnv([_thunk(i) for i in range(n_envs)])

@@ -18,6 +18,7 @@ dependencies = [
     "pyyaml",
     "tensorboard",
     "matplotlib",
+    "stable-baselines3>=2.3",
 ]
 
 [project.optional-dependencies]
@@ -68,5 +69,7 @@ module = [
     "vizdoom.*",
     "google.colab",
     "google.colab.*",
+    "stable_baselines3",
+    "stable_baselines3.*",
 ]
 ignore_missing_imports = true
