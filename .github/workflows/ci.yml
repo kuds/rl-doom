@@ -30,6 +30,7 @@ jobs:
           # skipped when the module isn't importable (see tests/conftest.py).
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install gymnasium numpy opencv-python pyyaml tensorboard matplotlib
+          pip install pettingzoo stable-baselines3
           pip install pytest ruff mypy
           pip install -e . --no-deps
 
