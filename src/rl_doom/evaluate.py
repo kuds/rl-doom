@@ -172,12 +172,26 @@ def record_and_save_video(
 # ---------------------------------------------------------------------------
 
 
-def load_run(run_dir: str | Path, *, device: str = "cpu") -> Any:
+def load_run(
+    run_dir: str | Path,
+    *,
+    device: str = "cpu",
+    prefer: str = "final",
+) -> Any:
     """Load the trained agent from a run directory, auto-detecting format.
 
     Prefers Stable-Baselines3 ``final.zip`` (written by :func:`rl_doom.sb3_utils.train_sb3`)
     when present. Falls back to the legacy ``final_full.pt`` / ``final.pt``
     custom-agent checkpoints.
+
+    Parameters
+    ----------
+    prefer : {"final", "best"}
+        Which SB3 checkpoint to try first. ``"final"`` (default) loads the
+        stage-end snapshot (``checkpoints/final.zip``); ``"best"`` loads the
+        best eval checkpoint saved by ``EvalCallback``
+        (``checkpoints/best/best_model.zip``). In either case, the other
+        checkpoint is used as a fallback when the preferred one is missing.
 
     The returned object always exposes a ``predict(obs, deterministic=True)``
     method (either natively for SB3 models, or via a tiny shim for legacy
@@ -187,8 +201,12 @@ def load_run(run_dir: str | Path, *, device: str = "cpu") -> Any:
     sb3_zip = run_dir / "checkpoints" / "final.zip"
     best_zip = run_dir / "checkpoints" / "best" / "best_model.zip"
 
-    # Prefer a stage-end snapshot, then the best eval checkpoint.
-    for candidate in (sb3_zip, best_zip):
+    if prefer == "best":
+        candidates = (best_zip, sb3_zip)
+    else:
+        candidates = (sb3_zip, best_zip)
+
+    for candidate in candidates:
         if candidate.exists():
             import json
 
