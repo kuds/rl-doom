@@ -493,8 +493,17 @@ def train_sb3(
     video_path: Path | None = None
     if record_video:
         out_name = f"{algo.lower()}_{scenario}.mp4"
+        # Record the gameplay clip from the best eval checkpoint when
+        # available — that's the weights the notebooks showcase — and only
+        # fall back to the in-memory (final-step) model if eval didn't run.
+        best_ckpt = ckpt_dir / "best" / "best_model.zip"
+        if best_ckpt.exists():
+            cls = PPO if algo.lower() == "ppo" else DQN
+            video_model: BaseAlgorithm = cls.load(str(best_ckpt), device=device)
+        else:
+            video_model = model
         video_path = _record_video(
-            model, scenario, media_dir / out_name, fps=video_fps,
+            video_model, scenario, media_dir / out_name, fps=video_fps,
         )
 
     # Finalise config.json + latest pointer, then write the per-run summary.
