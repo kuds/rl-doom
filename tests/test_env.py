@@ -53,7 +53,7 @@ def test_unknown_scenario_raises() -> None:
 def test_compound_action_space_expands_deadly_corridor() -> None:
     """Deadly Corridor should expose compound actions (e.g. MOVE_FORWARD+ATTACK)
     rather than the 7 one-hot single-button actions."""
-    from rl_doom.env import DoomEnv, SCENARIO_ACTION_SETS
+    from rl_doom.env import SCENARIO_ACTION_SETS, DoomEnv
 
     env = DoomEnv(scenario="deadly_corridor")
     try:
@@ -82,7 +82,7 @@ def test_compound_action_space_opt_out_returns_one_hot() -> None:
 
 def test_compound_action_space_basic_and_dtc() -> None:
     """Spot-check the other two curated scenarios."""
-    from rl_doom.env import DoomEnv, SCENARIO_ACTION_SETS
+    from rl_doom.env import SCENARIO_ACTION_SETS, DoomEnv
 
     for scenario in ("basic", "defend_the_center"):
         env = DoomEnv(scenario=scenario)

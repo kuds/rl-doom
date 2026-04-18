@@ -91,6 +91,10 @@ def generate_run_summary(run_dir: Path) -> str:
         date_str = "N/A"
 
     total_steps = hp.get("total_steps", hp.get("total_timesteps", "N/A"))
+    if isinstance(total_steps, (int, float)):
+        total_steps_str = _fmt_number(total_steps)
+    else:
+        total_steps_str = str(total_steps)
     wall_time = cfg.get("wall_time_seconds", float(metrics.get("wall_time_seconds", 0)))
     fps = float(metrics.get("fps", cfg.get("fps", 0)))
 
@@ -139,7 +143,7 @@ def generate_run_summary(run_dir: Path) -> str:
         f"Date:           {date_str}",
         f"Status:         {status}",
         f"Git SHA:        {cfg.get('git_sha', 'N/A')}",
-        f"Timesteps:      {_fmt_number(total_steps) if isinstance(total_steps, (int, float)) else total_steps}",
+        f"Timesteps:      {total_steps_str}",
     ]
 
     if wall_time > 0:
