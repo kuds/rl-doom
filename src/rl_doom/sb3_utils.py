@@ -31,6 +31,7 @@ from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.logger import configure
+from stable_baselines3.common.vec_env import VecNormalize
 
 from rl_doom.env import make_sb3_env, make_wrapped_env
 from rl_doom.paths import mark_run_status, update_latest_symlink
@@ -416,6 +417,24 @@ def train_sb3(
         monitor_dir=None,
     )
 
+    # Reward normalization for PPO: ViZDoom scenarios (especially
+    # deadly_corridor) have reward spikes in the thousands that dwarf the
+    # entropy bonus and inflate value loss. Wrapping the training env in
+    # VecNormalize with norm_reward=True scales the discounted returns by a
+    # running std estimate so the advantage/entropy scales stay comparable.
+    # DQN is left alone — Q-learning's Bellman target assumes un-normalized
+    # rewards, and SB3's VecNormalize would bias the replay buffer.
+    # The eval env is wrapped (training=False, norm_reward=False) only to
+    # satisfy SB3's ``sync_envs_normalization`` invariant; its reported
+    # rewards remain in the original raw scale.
+    if algo.lower() == "ppo":
+        vec_env = VecNormalize(
+            vec_env, norm_obs=False, norm_reward=True, clip_reward=10.0,
+        )
+        eval_env = VecNormalize(
+            eval_env, norm_obs=False, norm_reward=False, training=False,
+        )
+
     # --- model + logger ----------------------------------------------
     model = _build_model(
         algo,
@@ -462,6 +481,11 @@ def train_sb3(
 
     # --- persist ------------------------------------------------------
     model.save(str(ckpt_dir / "final.zip"))
+    # Save VecNormalize running stats so a future resumed run can pick up
+    # with the same reward-scale estimate (inference/video doesn't need it
+    # since we only normalise rewards, not observations).
+    if isinstance(vec_env, VecNormalize):
+        vec_env.save(str(ckpt_dir / "vec_normalize.pkl"))
     try:
         vec_env.close()
         eval_env.close()
