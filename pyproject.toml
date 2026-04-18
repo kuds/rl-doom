@@ -19,6 +19,7 @@ dependencies = [
     "tensorboard",
     "matplotlib",
     "stable-baselines3>=2.3",
+    "pettingzoo>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -71,5 +72,7 @@ module = [
     "google.colab.*",
     "stable_baselines3",
     "stable_baselines3.*",
+    "pettingzoo",
+    "pettingzoo.*",
 ]
 ignore_missing_imports = true
