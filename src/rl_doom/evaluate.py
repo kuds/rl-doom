@@ -126,16 +126,18 @@ def save_video(
     path.parent.mkdir(parents=True, exist_ok=True)
     ext = path.suffix.lower()
 
+    # imageio.mimsave's type stub is overly strict about list invariance,
+    # but it accepts a plain list of ndarrays at runtime.
     if ext == ".gif":
-        imageio.mimsave(path, frames, fps=fps, loop=0)
+        imageio.mimsave(path, frames, fps=fps, loop=0)  # type: ignore[arg-type]
         return path
 
     try:
-        imageio.mimsave(path, frames, fps=fps)
+        imageio.mimsave(path, frames, fps=fps)  # type: ignore[arg-type]
         return path
     except Exception as exc:  # noqa: BLE001 — fall back on any encoder error
         fallback = path.with_suffix(".gif")
-        imageio.mimsave(fallback, frames, fps=fps, loop=0)
+        imageio.mimsave(fallback, frames, fps=fps, loop=0)  # type: ignore[arg-type]
         print(
             f"Warning: video encoding to {path.suffix} failed ({exc}). "
             f"Saved GIF fallback to {fallback}"
@@ -207,13 +209,22 @@ def load_run(run_dir: str | Path, *, device: str = "cpu") -> Any:
         )
 
     # Build a minimal env just to infer shapes.
+    import gymnasium as gym
+
     from rl_doom.env import make_wrapped_env
 
     env = make_wrapped_env(cfg.get("env", "basic"))
-    obs_shape = env.observation_space.shape
-    n_actions = env.action_space.n
+    obs_space = env.observation_space
+    action_space = env.action_space
+    if not isinstance(obs_space, gym.spaces.Box) or obs_space.shape is None:
+        raise TypeError(f"Expected Box observation space, got {type(obs_space).__name__}")
+    if not isinstance(action_space, gym.spaces.Discrete):
+        raise TypeError(f"Expected Discrete action space, got {type(action_space).__name__}")
+    obs_shape: tuple[int, ...] = tuple(obs_space.shape)
+    n_actions = int(action_space.n)
     env.close()
 
+    agent: DQNAgent | PPOAgent
     if algo == "dqn":
         agent = DQNAgent(obs_shape=obs_shape, n_actions=n_actions,
                          lr=hp.get("lr", 1e-4), gamma=hp.get("gamma", 0.99),
@@ -231,5 +242,5 @@ def load_run(run_dir: str | Path, *, device: str = "cpu") -> Any:
         action, _, _ = _agent.select_action(obs)
         return np.asarray(action), None
 
-    agent.predict = _predict  # type: ignore[attr-defined]
+    setattr(agent, "predict", _predict)
     return agent

@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import gymnasium as gym
 import numpy as np
 import pytest
 
 vizdoom = pytest.importorskip("vizdoom")
+
+
+def _discrete_n(space: gym.Space) -> int:
+    """Narrow a generic ``Space`` to ``Discrete`` and return its size."""
+    assert isinstance(space, gym.spaces.Discrete), (
+        f"Expected Discrete action space, got {type(space).__name__}"
+    )
+    return int(space.n)
 
 
 def test_make_wrapped_env_reset_shape() -> None:
@@ -58,7 +67,7 @@ def test_compound_action_space_expands_deadly_corridor() -> None:
     env = DoomEnv(scenario="deadly_corridor")
     try:
         # 7 raw buttons -> curated set has 14 compound actions.
-        assert env.action_space.n == len(SCENARIO_ACTION_SETS["deadly_corridor"])
+        assert _discrete_n(env.action_space) == len(SCENARIO_ACTION_SETS["deadly_corridor"])
         # At least one action must press two buttons simultaneously.
         multi = [a for a in env.available_actions if sum(a) > 1]
         assert multi, "compound action set did not produce any multi-button actions"
@@ -73,7 +82,7 @@ def test_compound_action_space_opt_out_returns_one_hot() -> None:
 
     env = DoomEnv(scenario="deadly_corridor", use_compound_actions=False)
     try:
-        assert env.action_space.n == 7  # 7 raw buttons
+        assert _discrete_n(env.action_space) == 7  # 7 raw buttons
         # Every action presses exactly one button.
         assert all(sum(a) == 1 for a in env.available_actions)
     finally:
@@ -87,7 +96,7 @@ def test_compound_action_space_basic_and_dtc() -> None:
     for scenario in ("basic", "defend_the_center"):
         env = DoomEnv(scenario=scenario)
         try:
-            assert env.action_space.n == len(SCENARIO_ACTION_SETS[scenario])
+            assert _discrete_n(env.action_space) == len(SCENARIO_ACTION_SETS[scenario])
             # Each scenario should include at least one "press + ATTACK" compound.
             assert any(sum(a) >= 2 for a in env.available_actions)
         finally:

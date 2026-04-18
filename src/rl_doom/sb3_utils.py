@@ -309,25 +309,36 @@ def _record_video(
     while hasattr(base_env, "env"):
         base_env = base_env.env
 
+    def _frame() -> np.ndarray:
+        # Gymnasium's ``render`` signature is ``RenderFrame | list | None``;
+        # DoomEnv.render always produces a single HWC ndarray, so narrow.
+        frame: Any = base_env.render()
+        assert isinstance(frame, np.ndarray), (
+            f"Expected ndarray frame from DoomEnv.render, got {type(frame).__name__}"
+        )
+        return frame
+
     obs, _ = env.reset()
-    frames: list[np.ndarray] = [base_env.render()]
+    frames: list[np.ndarray] = [_frame()]
     done = False
     step = 0
     while not done and step < max_steps:
         action, _ = model.predict(obs, deterministic=True)
         obs, _, terminated, truncated, _ = env.step(int(action))
-        frames.append(base_env.render())
+        frames.append(_frame())
         done = terminated or truncated
         step += 1
     env.close()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # imageio.mimsave's type stub is overly strict about list invariance,
+    # but it accepts a plain list of ndarrays at runtime.
     try:
-        imageio.mimsave(out_path, frames, fps=fps)
+        imageio.mimsave(out_path, frames, fps=fps)  # type: ignore[arg-type]
         return out_path
     except Exception as exc:  # noqa: BLE001
         fallback = out_path.with_suffix(".gif")
-        imageio.mimsave(fallback, frames, fps=fps, loop=0)
+        imageio.mimsave(fallback, frames, fps=fps, loop=0)  # type: ignore[arg-type]
         print(f"[video] mp4 encode failed ({exc}); wrote GIF fallback: {fallback}")
         return fallback
 
@@ -554,10 +565,12 @@ def _collect_episode_stats(monitor_dir: Path) -> dict[str, np.ndarray]:
                     timestamps.append(float(row["t"]))
                 except (KeyError, TypeError, ValueError):
                     continue
-    order = np.argsort(timestamps) if timestamps else []
+    if not timestamps:
+        return {"rewards": np.array([]), "lengths": np.array([])}
+    order: np.ndarray = np.argsort(timestamps)
     return {
-        "rewards": np.asarray(rewards, dtype=np.float32)[order] if len(rewards) else np.array([]),
-        "lengths": np.asarray(lengths, dtype=np.int64)[order] if len(lengths) else np.array([]),
+        "rewards": np.asarray(rewards, dtype=np.float32)[order],
+        "lengths": np.asarray(lengths, dtype=np.int64)[order],
     }
 
 
