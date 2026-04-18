@@ -1,0 +1,35 @@
+# Hyperparameters for PPO (stable-baselines3, CnnPolicy) on Deathmatch.
+# Paired with configs/dqn_deathmatch.yaml for same-scenario algorithm comparison.
+# Deathmatch combines navigation, aiming, and combat, so we raise the step
+# budget above defend_the_center / deadly_corridor and bump entropy_coef to
+# keep exploration alive while the policy learns the compound action set.
+
+scenario: deathmatch
+algorithm: ppo
+seed: 42
+
+env:
+  resize_shape: [84, 84]
+  frame_skip: 4
+  num_stack: 4
+  n_envs: 8
+
+hyperparams:
+  lr: 2.5e-4
+  n_steps: 1024
+  batch_size: 256
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  entropy_coef: 0.03
+  value_coef: 0.5
+  max_grad_norm: 0.5
+
+training:
+  total_timesteps: 2000000
+  checkpoint_freq: 200000
+
+eval:
+  eval_freq: 50000
+  n_episodes: 10

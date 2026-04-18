@@ -76,6 +76,33 @@ SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
         ["TURN_LEFT", "ATTACK"],
         ["TURN_RIGHT", "ATTACK"],
     ],
+    "deathmatch": [
+        # Deathmatch needs both navigation and combat. We restrict to the
+        # binary movement/attack buttons and skip the delta + weapon-select
+        # buttons in deathmatch.cfg — delta buttons expect continuous values
+        # rather than a 0/1 press, and weapon switching adds a large branching
+        # factor that's better left for a policy with a more expressive
+        # action space. SPEED is included so the agent can run while chasing.
+        ["MOVE_FORWARD"],
+        ["MOVE_BACKWARD"],
+        ["TURN_LEFT"],
+        ["TURN_RIGHT"],
+        ["MOVE_LEFT"],
+        ["MOVE_RIGHT"],
+        ["ATTACK"],
+        # Fire while moving/turning to track and engage opponents.
+        ["MOVE_FORWARD", "ATTACK"],
+        ["MOVE_LEFT", "ATTACK"],
+        ["MOVE_RIGHT", "ATTACK"],
+        ["TURN_LEFT", "ATTACK"],
+        ["TURN_RIGHT", "ATTACK"],
+        # Navigate while aiming.
+        ["MOVE_FORWARD", "TURN_LEFT"],
+        ["MOVE_FORWARD", "TURN_RIGHT"],
+        # Sprint for closing distance / escaping.
+        ["SPEED", "MOVE_FORWARD"],
+        ["SPEED", "MOVE_FORWARD", "ATTACK"],
+    ],
 }
 
 
@@ -125,8 +152,8 @@ class DoomEnv(gym.Env):
         # Prefer the curated compound action set for this scenario when one is
         # registered; fall back to the legacy one-hot layout otherwise (or
         # when the caller opts out). Falling back preserves backward
-        # compatibility for scenarios we haven't tuned yet (deathmatch,
-        # health_gathering, my_way_home, predict_position).
+        # compatibility for scenarios we haven't tuned yet (health_gathering,
+        # my_way_home, predict_position).
         curated = SCENARIO_ACTION_SETS.get(scenario) if use_compound_actions else None
         if curated is not None:
             name_to_idx = {name: i for i, name in enumerate(button_names)}
