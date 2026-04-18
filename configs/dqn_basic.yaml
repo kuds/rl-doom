@@ -1,35 +1,36 @@
-# Hyperparameters for Double DQN on the Basic scenario.
+# Hyperparameters for DQN (stable-baselines3, CnnPolicy) on the Basic scenario.
 # Paired with configs/ppo_basic.yaml for same-scenario algorithm comparison.
-# Consumed by notebooks/02_dqn_training.ipynb and future train.py.
+# Defaults tuned for an L4 GPU + high-memory Colab runtime.
 
 scenario: basic
 algorithm: dqn
+seed: 42
 
 env:
   resize_shape: [84, 84]
   frame_skip: 4
   num_stack: 4
+  n_envs: 1                     # SB3 DQN requires n_envs=1
 
-agent:
+hyperparams:
   lr: 1.0e-4
+  buffer_size: 100000
+  learning_starts: 10000
+  batch_size: 64
+  tau: 1.0                      # hard target update
   gamma: 0.99
-
-replay_buffer:
-  capacity: 50000
-  warmup_steps: 1000
+  train_freq: 4
+  gradient_steps: 1
+  target_update_interval: 1000
+  exploration_fraction: 0.3     # anneal epsilon over first 30% of training
+  eps_start: 1.0
+  eps_end: 0.05
+  max_grad_norm: 10.0
 
 training:
-  total_steps: 100000
-  batch_size: 32
-  target_update_interval: 1000
-  train_every: 4
-  seed: 0
-
-exploration:
-  epsilon_start: 1.0
-  epsilon_end: 0.05
-  epsilon_decay_steps: 50000
+  total_timesteps: 200000
+  checkpoint_freq: 50000
 
 eval:
+  eval_freq: 10000
   n_episodes: 10
-  eval_every: 10000

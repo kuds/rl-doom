@@ -1,17 +1,22 @@
-# Hyperparameters for PPO on the Basic scenario.
+# Hyperparameters for PPO (stable-baselines3, CnnPolicy) on the Basic scenario.
 # Paired with configs/dqn_basic.yaml for same-scenario algorithm comparison.
-# Budget matches dqn_basic.yaml (100k steps) for a fair head-to-head.
+# Defaults tuned for an L4 GPU + high-memory Colab runtime.
 
 scenario: basic
 algorithm: ppo
+seed: 42
 
 env:
   resize_shape: [84, 84]
   frame_skip: 4
   num_stack: 4
+  n_envs: 8                     # DummyVecEnv (no subprocesses on Colab)
 
-agent:
-  lr: 3.0e-4
+hyperparams:
+  lr: 2.5e-4
+  n_steps: 1024                 # per env => 8 * 1024 = 8192 samples / rollout
+  batch_size: 256
+  n_epochs: 4
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
@@ -20,12 +25,9 @@ agent:
   max_grad_norm: 0.5
 
 training:
-  total_steps: 100000
-  rollout_length: 2048
-  n_epochs: 4
-  batch_size: 64
-  seed: 0
+  total_timesteps: 500000
+  checkpoint_freq: 100000
 
 eval:
+  eval_freq: 25000
   n_episodes: 10
-  eval_every: 10000
