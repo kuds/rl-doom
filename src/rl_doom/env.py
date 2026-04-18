@@ -27,6 +27,58 @@ SCENARIO_MAP: dict[str, str] = {
 }
 
 
+# Curated action sets per scenario. Each inner list is the set of simultaneously
+# pressed buttons for one discrete action. The original ``np.eye`` one-hot
+# layout (one button pressed per action) cannot express compound actions that
+# are required to play these scenarios well — e.g. "move forward while
+# shooting" in Deadly Corridor or "turn while firing" in Defend the Center.
+# Without compound actions the PPO policy on Deadly Corridor collapses to a
+# deterministic "die faster" strategy because no single-button policy can
+# survive the corridor.
+#
+# Button names map 1:1 to ``vizdoom.Button`` enum member names. Any name that
+# is not in the scenario's ``available_buttons`` list raises at init time.
+SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
+    "basic": [
+        ["MOVE_LEFT"],
+        ["MOVE_RIGHT"],
+        ["ATTACK"],
+        # Strafe while firing — lets the agent track a moving target.
+        ["MOVE_LEFT", "ATTACK"],
+        ["MOVE_RIGHT", "ATTACK"],
+    ],
+    "deadly_corridor": [
+        # Pure movement / turning (still useful for navigation + aiming).
+        ["MOVE_FORWARD"],
+        ["MOVE_BACKWARD"],
+        ["TURN_LEFT"],
+        ["TURN_RIGHT"],
+        ["MOVE_LEFT"],
+        ["MOVE_RIGHT"],
+        # Stationary attack.
+        ["ATTACK"],
+        # The compound actions that actually let the agent survive:
+        # push forward while firing / strafing / aiming.
+        ["MOVE_FORWARD", "ATTACK"],
+        ["MOVE_FORWARD", "MOVE_LEFT"],
+        ["MOVE_FORWARD", "MOVE_RIGHT"],
+        ["MOVE_FORWARD", "TURN_LEFT"],
+        ["MOVE_FORWARD", "TURN_RIGHT"],
+        # Fire while turning to track imps on either side.
+        ["TURN_LEFT", "ATTACK"],
+        ["TURN_RIGHT", "ATTACK"],
+    ],
+    "defend_the_center": [
+        ["TURN_LEFT"],
+        ["TURN_RIGHT"],
+        ["ATTACK"],
+        # Killer compound: rotate while firing to sweep the arena.
+        ["TURN_LEFT", "ATTACK"],
+        ["TURN_RIGHT", "ATTACK"],
+    ],
+}
+
+
 class DoomEnv(gym.Env):
     """Gymnasium wrapper around a ViZDoom game instance.
 
@@ -48,6 +100,7 @@ class DoomEnv(gym.Env):
         scenario: str = "basic",
         frame_skip: int = 1,
         render_mode: str | None = None,
+        use_compound_actions: bool = True,
     ) -> None:
         super().__init__()
 
@@ -67,12 +120,35 @@ class DoomEnv(gym.Env):
 
         self._frame_skip = frame_skip
         n_buttons = self.game.get_available_buttons_size()
+        button_names = [b.name for b in self.game.get_available_buttons()]
 
-        # Build the list of one-hot action vectors (one per button).
-        self._actions = np.eye(n_buttons, dtype=np.int32).tolist()
+        # Prefer the curated compound action set for this scenario when one is
+        # registered; fall back to the legacy one-hot layout otherwise (or
+        # when the caller opts out). Falling back preserves backward
+        # compatibility for scenarios we haven't tuned yet (deathmatch,
+        # health_gathering, my_way_home, predict_position).
+        curated = SCENARIO_ACTION_SETS.get(scenario) if use_compound_actions else None
+        if curated is not None:
+            name_to_idx = {name: i for i, name in enumerate(button_names)}
+            actions: list[list[int]] = []
+            for combo in curated:
+                vec = [0] * n_buttons
+                for name in combo:
+                    if name not in name_to_idx:
+                        raise ValueError(
+                            f"Scenario {scenario!r} compound action {combo!r} "
+                            f"references button {name!r} which is not available; "
+                            f"available buttons: {button_names}"
+                        )
+                    vec[name_to_idx[name]] = 1
+                actions.append(vec)
+            self._actions = actions
+        else:
+            # Legacy one-hot vectors (one button pressed per action).
+            self._actions = np.eye(n_buttons, dtype=np.int32).tolist()
+
         self.available_actions = self._actions
-
-        self.action_space = gym.spaces.Discrete(n_buttons)
+        self.action_space = gym.spaces.Discrete(len(self._actions))
         # Observation = RGB image from the screen buffer (H, W, 3).
         h, w = self.game.get_screen_height(), self.game.get_screen_width()
         self._obs_shape: tuple[int, int, int] = (h, w, 3)
@@ -223,14 +299,20 @@ def make_wrapped_env(
     resize_shape: tuple[int, int] = (84, 84),
     frame_skip: int = 4,
     num_stack: int = 4,
+    use_compound_actions: bool = True,
 ) -> gym.Env:
     """Build the standard Atari-style preprocessing pipeline for a ViZDoom scenario.
 
     Chains ``DoomEnv -> ResizeObservation -> SkipFrame -> FrameStack``.  This
     is the wrapper stack used by every training and analysis notebook, so
     centralising it here keeps them in lock-step.
+
+    ``use_compound_actions`` (default True) expands the one-hot action space
+    into the curated compound action set for the scenario — see
+    :data:`SCENARIO_ACTION_SETS`. Pass ``False`` to keep the legacy one-per-
+    button layout (useful when comparing against older runs).
     """
-    env: gym.Env = DoomEnv(scenario=scenario)
+    env: gym.Env = DoomEnv(scenario=scenario, use_compound_actions=use_compound_actions)
     env = ResizeObservation(env, shape=resize_shape)
     env = SkipFrame(env, skip=frame_skip)
     env = FrameStack(env, num_stack=num_stack)
@@ -251,6 +333,7 @@ def make_sb3_env(
     resize_shape: tuple[int, int] = (84, 84),
     frame_skip: int = 4,
     num_stack: int = 4,
+    use_compound_actions: bool = True,
 ):
     """Build a Stable-Baselines3 ``DummyVecEnv`` for a ViZDoom scenario.
 
@@ -285,6 +368,7 @@ def make_sb3_env(
                 resize_shape=resize_shape,
                 frame_skip=frame_skip,
                 num_stack=num_stack,
+                use_compound_actions=use_compound_actions,
             )
             # Seed the env deterministically per worker.
             env.reset(seed=seed + idx)
