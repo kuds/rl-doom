@@ -106,6 +106,21 @@ SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
 }
 
 
+# Per-scenario default difficulty (Doom skill 1..5). ``None``/unset means
+# "use whatever ``doom_skill`` is baked into the scenario's .cfg" (typically 3
+# — "Hurt me plenty"). Overriding here keeps train / eval / video / analysis
+# envs in lock-step without every call site having to pass a kwarg.
+#
+# * Deadly Corridor uses skill 4 (Ultra-Violence): the stock scenario at
+#   skill 3 is trivially solvable by sprinting past the imps, which makes the
+#   gauntlet a poor discriminator between algorithms. Skill 4 keeps the
+#   episode horizon bounded (no Nightmare respawn) while making the monsters
+#   meaningfully more aggressive.
+SCENARIO_DEFAULT_SKILL: dict[str, int] = {
+    "deadly_corridor": 4,
+}
+
+
 class DoomEnv(gym.Env):
     """Gymnasium wrapper around a ViZDoom game instance.
 
@@ -118,6 +133,10 @@ class DoomEnv(gym.Env):
         when using the external ``SkipFrame`` wrapper.
     render_mode : str | None
         Not used directly, kept for Gymnasium compatibility.
+    doom_skill : int | None
+        ViZDoom difficulty (1..5). ``None`` (default) picks the scenario's
+        entry in :data:`SCENARIO_DEFAULT_SKILL` if one exists, otherwise
+        leaves the cfg's own default untouched.
     """
 
     metadata = {"render_modes": ["rgb_array"]}
@@ -128,6 +147,7 @@ class DoomEnv(gym.Env):
         frame_skip: int = 1,
         render_mode: str | None = None,
         use_compound_actions: bool = True,
+        doom_skill: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -143,6 +163,16 @@ class DoomEnv(gym.Env):
         self.game.set_window_visible(False)
         self.game.set_screen_format(vizdoom.ScreenFormat.RGB24)
         self.game.set_screen_resolution(vizdoom.ScreenResolution.RES_320X240)
+
+        skill = doom_skill if doom_skill is not None else SCENARIO_DEFAULT_SKILL.get(scenario)
+        if skill is not None:
+            if not 1 <= skill <= 5:
+                raise ValueError(
+                    f"doom_skill must be in [1, 5], got {skill!r}"
+                )
+            self.game.set_doom_skill(skill)
+        self._doom_skill = skill
+
         self.game.init()
 
         self._frame_skip = frame_skip
@@ -327,6 +357,7 @@ def make_wrapped_env(
     frame_skip: int = 4,
     num_stack: int = 4,
     use_compound_actions: bool = True,
+    doom_skill: int | None = None,
 ) -> gym.Env:
     """Build the standard Atari-style preprocessing pipeline for a ViZDoom scenario.
 
@@ -338,8 +369,16 @@ def make_wrapped_env(
     into the curated compound action set for the scenario — see
     :data:`SCENARIO_ACTION_SETS`. Pass ``False`` to keep the legacy one-per-
     button layout (useful when comparing against older runs).
+
+    ``doom_skill`` (default None) forwards to :class:`DoomEnv`; passing
+    ``None`` lets the scenario's :data:`SCENARIO_DEFAULT_SKILL` entry (or
+    the cfg default) take effect.
     """
-    env: gym.Env = DoomEnv(scenario=scenario, use_compound_actions=use_compound_actions)
+    env: gym.Env = DoomEnv(
+        scenario=scenario,
+        use_compound_actions=use_compound_actions,
+        doom_skill=doom_skill,
+    )
     env = ResizeObservation(env, shape=resize_shape)
     env = SkipFrame(env, skip=frame_skip)
     env = FrameStack(env, num_stack=num_stack)
@@ -361,6 +400,7 @@ def make_sb3_env(
     frame_skip: int = 4,
     num_stack: int = 4,
     use_compound_actions: bool = True,
+    doom_skill: int | None = None,
 ):
     """Build a Stable-Baselines3 ``DummyVecEnv`` for a ViZDoom scenario.
 
@@ -396,6 +436,7 @@ def make_sb3_env(
                 frame_skip=frame_skip,
                 num_stack=num_stack,
                 use_compound_actions=use_compound_actions,
+                doom_skill=doom_skill,
             )
             # Seed the env deterministically per worker.
             env.reset(seed=seed + idx)
