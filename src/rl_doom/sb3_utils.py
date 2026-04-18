@@ -444,6 +444,8 @@ def train_sb3(
     device: str | torch.device | None = None,
     verbose: int = 0,
     on_complete: Callable[[Path], None] | None = None,
+    doom_skill: int | None = None,
+    num_bots: int = 0,
 ) -> dict[str, Any]:
     """Train a single SB3 model end-to-end and write *all* artifacts now.
 
@@ -489,6 +491,8 @@ def train_sb3(
         n_envs=n_envs,
         seed=seed,
         monitor_dir=str(monitor_dir),
+        doom_skill=doom_skill,
+        num_bots=num_bots,
     )
     # Eval env is kept small (n_envs=1) and offset-seeded so eval rollouts
     # aren't duplicates of training rollouts.
@@ -497,6 +501,8 @@ def train_sb3(
         n_envs=1,
         seed=seed + 10_000,
         monitor_dir=None,
+        doom_skill=doom_skill,
+        num_bots=num_bots,
     )
 
     # Reward normalization for PPO: ViZDoom scenarios (especially

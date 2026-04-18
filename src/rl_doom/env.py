@@ -130,6 +130,11 @@ class DoomEnv(gym.Env):
         ViZDoom difficulty (1..5). ``None`` (default) picks the scenario's
         entry in :data:`SCENARIO_DEFAULT_SKILL` if one exists, otherwise
         leaves the cfg's own default untouched.
+    num_bots : int
+        Number of ZDoom AI-controlled bots to spawn via ``addbot`` at the
+        start of each episode. Only meaningful on deathmatch-style maps;
+        non-deathmatch scenarios will silently ignore the addbot command.
+        Defaults to 0 (no bots).
     """
 
     metadata = {"render_modes": ["rgb_array"]}
@@ -141,6 +146,7 @@ class DoomEnv(gym.Env):
         render_mode: str | None = None,
         use_compound_actions: bool = True,
         doom_skill: int | None = None,
+        num_bots: int = 0,
     ) -> None:
         super().__init__()
 
@@ -165,6 +171,10 @@ class DoomEnv(gym.Env):
                 )
             self.game.set_doom_skill(skill)
         self._doom_skill = skill
+
+        if num_bots < 0:
+            raise ValueError(f"num_bots must be >= 0, got {num_bots!r}")
+        self._num_bots = num_bots
 
         self.game.init()
 
@@ -237,6 +247,8 @@ class DoomEnv(gym.Env):
         if seed is not None:
             self.game.set_seed(seed)
         self.game.new_episode()
+        for _ in range(self._num_bots):
+            self.game.send_game_command("addbot")
         return self._get_obs(), {}
 
     def step(
@@ -382,6 +394,7 @@ def make_wrapped_env(
     num_stack: int = 4,
     use_compound_actions: bool = True,
     doom_skill: int | None = None,
+    num_bots: int = 0,
 ) -> gym.Env:
     """Build the standard Atari-style preprocessing pipeline for a ViZDoom scenario.
 
@@ -397,11 +410,15 @@ def make_wrapped_env(
     ``doom_skill`` (default None) forwards to :class:`DoomEnv`; passing
     ``None`` lets the scenario's :data:`SCENARIO_DEFAULT_SKILL` entry (or
     the cfg default) take effect.
+
+    ``num_bots`` (default 0) forwards to :class:`DoomEnv` — ZDoom AI bots
+    are spawned at each ``reset()`` on deathmatch-style maps.
     """
     env: gym.Env = DoomEnv(
         scenario=scenario,
         use_compound_actions=use_compound_actions,
         doom_skill=doom_skill,
+        num_bots=num_bots,
     )
     env = ResizeObservation(env, shape=resize_shape)
     env = SkipFrame(env, skip=frame_skip)
@@ -425,6 +442,7 @@ def make_sb3_env(
     num_stack: int = 4,
     use_compound_actions: bool = True,
     doom_skill: int | None = None,
+    num_bots: int = 0,
 ):
     """Build a Stable-Baselines3 ``DummyVecEnv`` for a ViZDoom scenario.
 
@@ -461,6 +479,7 @@ def make_sb3_env(
                 num_stack=num_stack,
                 use_compound_actions=use_compound_actions,
                 doom_skill=doom_skill,
+                num_bots=num_bots,
             )
             # Seed the env deterministically per worker.
             env.reset(seed=seed + idx)
