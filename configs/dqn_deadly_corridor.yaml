@@ -12,10 +12,6 @@ env:
   frame_skip: 4
   num_stack: 4
   n_envs: 1
-  # Ultra-Violence: keeps the gauntlet's finite-horizon structure intact
-  # while making imps more aggressive. Nightmare (5) would add monster
-  # respawn, which breaks credit assignment for DQN/PPO.
-  doom_skill: 4
 
 hyperparams:
   lr: 1.0e-4

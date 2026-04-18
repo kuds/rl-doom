@@ -108,17 +108,10 @@ SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
 
 # Per-scenario default difficulty (Doom skill 1..5). ``None``/unset means
 # "use whatever ``doom_skill`` is baked into the scenario's .cfg" (typically 3
-# — "Hurt me plenty"). Overriding here keeps train / eval / video / analysis
-# envs in lock-step without every call site having to pass a kwarg.
-#
-# * Deadly Corridor uses skill 4 (Ultra-Violence): the stock scenario at
-#   skill 3 is trivially solvable by sprinting past the imps, which makes the
-#   gauntlet a poor discriminator between algorithms. Skill 4 keeps the
-#   episode horizon bounded (no Nightmare respawn) while making the monsters
-#   meaningfully more aggressive.
-SCENARIO_DEFAULT_SKILL: dict[str, int] = {
-    "deadly_corridor": 4,
-}
+# — "Hurt me plenty", which is also ViZDoom's built-in DoomGame default).
+# Overriding here keeps train / eval / video / analysis envs in lock-step
+# without every call site having to pass a kwarg.
+SCENARIO_DEFAULT_SKILL: dict[str, int] = {}
 
 
 class DoomEnv(gym.Env):
@@ -174,6 +167,12 @@ class DoomEnv(gym.Env):
         self._doom_skill = skill
 
         self.game.init()
+
+        # Cache the scenario's episode timeout (in game tics) so we can
+        # classify terminations as death/timeout/goal_reached in ``step``.
+        # A value of 0 means "no timeout" (agent must reach a terminal
+        # state defined by the scenario's ACS script).
+        self._episode_timeout = int(self.game.get_episode_timeout())
 
         self._frame_skip = frame_skip
         n_buttons = self.game.get_available_buttons_size()
@@ -246,7 +245,32 @@ class DoomEnv(gym.Env):
         reward = self.game.make_action(self._actions[action], self._frame_skip)
         terminated = self.game.is_episode_finished()
         obs = self._get_obs()
-        return obs, reward, terminated, False, {}
+        info: dict[str, Any] = {}
+        if terminated:
+            info["termination_reason"] = self._classify_termination()
+            info["episode_tics"] = int(self.game.get_episode_time())
+            try:
+                info["final_health"] = float(
+                    self.game.get_game_variable(vizdoom.GameVariable.HEALTH),
+                )
+            except Exception:  # noqa: BLE001 — game var may be unavailable
+                info["final_health"] = None
+        return obs, reward, terminated, False, info
+
+    def _classify_termination(self) -> str:
+        """Label why the current episode ended.
+
+        * ``"death"``     — the player died (health <= 0 or dead flag set).
+        * ``"timeout"``   — the scenario's ``episode_timeout`` elapsed.
+        * ``"goal_reached"`` — the ACS script ended the episode any other
+          way, e.g. picking up the green vest at the end of Deadly Corridor.
+        """
+        if self.game.is_player_dead():
+            return "death"
+        tic = int(self.game.get_episode_time())
+        if self._episode_timeout > 0 and tic >= self._episode_timeout:
+            return "timeout"
+        return "goal_reached"
 
     def render(self) -> np.ndarray:  # type: ignore[override]
         # Gymnasium's base signature returns RenderFrame | list | None;
