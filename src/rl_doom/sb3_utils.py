@@ -620,6 +620,21 @@ def train_sb3(
     final_eval_mean = float(_legacy_eval_log(evaluations)[-1][1]) \
         if evaluations.get("results") is not None and evaluations["results"].size \
         else None
+    # Best-eval reward across all EvalCallback checkpoints. This matches the
+    # weights that ``checkpoints/best/best_model.zip`` holds and that the
+    # gameplay video uses, so surfacing it alongside ``mean_eval_reward``
+    # (which is the final-step eval) makes the two numbers comparable.
+    eval_log = _legacy_eval_log(evaluations)
+    best_eval_mean = (
+        float(eval_log[:, 1].max()) if eval_log.shape[0] else None
+    )
+    # Success rate = fraction of training episodes that ended with the agent
+    # reaching the scenario's goal (e.g. the vest in deadly_corridor). Pulled
+    # from the termination tracker rather than reward because reward plateaus
+    # can come from kill-and-die local optima without ever reaching the goal.
+    total_eps = sum(termination_tracker.counts.values())
+    goal_count = termination_tracker.counts.get("goal_reached", 0)
+    success_rate = (goal_count / total_eps) if total_eps else None
     mark_run_status(
         run_dir,
         status="completed",
@@ -627,6 +642,8 @@ def train_sb3(
         total_env_steps=total_timesteps,
         fps=fps,
         mean_eval_reward=final_eval_mean,
+        best_eval_reward=best_eval_mean,
+        success_rate=success_rate,
     )
     update_latest_symlink(scenario, algo.lower(), run_dir)
 
@@ -639,6 +656,8 @@ def train_sb3(
         "wall_time_seconds": wall_time,
         "fps": fps,
         "mean_eval_reward": final_eval_mean,
+        "best_eval_reward": best_eval_mean,
+        "success_rate": success_rate,
         "video_path": video_path,
         "learning_curves_path": learning_curves_path,
     }

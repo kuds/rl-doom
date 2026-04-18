@@ -169,6 +169,18 @@ def generate_run_summary(run_dir: Path) -> str:
         f"Recent train:   {recent_str} (last 20 episodes)",
     ]
 
+    # Headline success rate (goal-reached fraction across all training
+    # episodes). This is the "did the agent actually solve the task?" metric,
+    # distinct from reward plateaus driven by kill-and-die local optima.
+    counts_for_rate = terminations.get("counts") or {}
+    total_for_rate = terminations.get("total_episodes", sum(counts_for_rate.values())) or 0
+    if total_for_rate:
+        goal_n = int(counts_for_rate.get("goal_reached", 0))
+        lines.append(
+            f"Success rate:   {goal_n / total_for_rate * 100:.1f}% "
+            f"({goal_n:,} / {total_for_rate:,} episodes)",
+        )
+
     if gpu:
         lines += [
             "",
