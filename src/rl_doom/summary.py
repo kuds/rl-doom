@@ -106,8 +106,10 @@ def generate_run_summary(run_dir: Path) -> str:
         total_steps_str = _fmt_number(total_steps)
     else:
         total_steps_str = str(total_steps)
-    wall_time = cfg.get("wall_time_seconds", float(metrics.get("wall_time_seconds", 0)))
-    fps = float(metrics.get("fps", cfg.get("fps", 0)))
+    # Runtime outcomes live in metrics/training.npz; config.json only carries
+    # identity + hardware + hyperparameters.
+    wall_time = float(metrics.get("wall_time_seconds", 0) or 0)
+    fps = float(metrics.get("fps", 0) or 0)
 
     ep_rewards = metrics.get("episode_rewards", np.array([]))
     eval_rewards = metrics.get("eval_rewards", metrics.get("eval_log", np.array([])))
