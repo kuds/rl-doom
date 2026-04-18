@@ -187,11 +187,16 @@ def fake_vizdoom(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     binding points at the fake instead of (a possibly missing) real install.
     """
     fake = types.ModuleType("vizdoom")
-    fake.DoomGame = _FakeDoomGame
-    fake.GameVariable = _FakeGameVariable
-    fake.ScreenFormat = _FakeScreenFormat
-    fake.Mode = _FakeMode
-    fake.scenarios_path = "/tmp/scenarios"
+    # setattr (instead of attribute assignment) keeps mypy quiet about
+    # decorating a ``ModuleType`` instance with arbitrary attributes.
+    for name, value in {
+        "DoomGame": _FakeDoomGame,
+        "GameVariable": _FakeGameVariable,
+        "ScreenFormat": _FakeScreenFormat,
+        "Mode": _FakeMode,
+        "scenarios_path": "/tmp/scenarios",
+    }.items():
+        setattr(fake, name, value)
     monkeypatch.setitem(sys.modules, "vizdoom", fake)
 
     # Reset per-test class state.
@@ -298,7 +303,7 @@ def test_episode_finished_clears_agents(fake_vizdoom: types.ModuleType) -> None:
     try:
         env.reset()
         # Force the host game to report a finished match.
-        env._games["player_0"]._finished = True  # type: ignore[attr-defined]
+        env._games["player_0"]._finished = True
         _, _, terms, _, _ = env.step({"player_0": 0, "player_1": 0})
         assert all(terms.values())
         assert env.agents == []
@@ -316,7 +321,7 @@ def test_action_table_selects_correct_buttons(fake_vizdoom: types.ModuleType) ->
     try:
         env.reset()
         env.step({"player_0": 7, "player_1": 0})
-        vec = env._games["player_0"].actions_submitted[-1]  # type: ignore[attr-defined]
+        vec = env._games["player_0"].actions_submitted[-1]
         assert vec[0] == 1  # MOVE_FORWARD
         assert vec[6] == 1  # ATTACK
         assert sum(vec) == 2
@@ -333,7 +338,7 @@ def test_second_reset_calls_new_episode_on_all_games(
     try:
         env.reset()
         env.reset()
-        for game in env._games.values():  # type: ignore[attr-defined]
+        for game in env._games.values():
             assert game.new_episode_calls == 1
     finally:
         env.close()

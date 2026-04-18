@@ -194,11 +194,15 @@ class DoomMultiplayerEnv(ParallelEnv):
         probe.close()
 
         self._num_actions = len(probe_table)
-        single_action_space = gym.spaces.Discrete(self._num_actions)
-        single_obs_space = self._build_obs_space()
+        single_action_space: gym.spaces.Discrete = gym.spaces.Discrete(self._num_actions)
+        single_obs_space: gym.spaces.Box = self._build_obs_space()
         # PettingZoo's Parallel API asks for per-agent spaces; they're identical here.
-        self._action_spaces = {a: single_action_space for a in self.possible_agents}
-        self._observation_spaces = {a: single_obs_space for a in self.possible_agents}
+        self._action_spaces: dict[str, gym.spaces.Discrete] = {
+            a: single_action_space for a in self.possible_agents
+        }
+        self._observation_spaces: dict[str, gym.spaces.Box] = {
+            a: single_obs_space for a in self.possible_agents
+        }
 
     # ------------------------------------------------------------------
     # PettingZoo API
@@ -229,7 +233,7 @@ class DoomMultiplayerEnv(ParallelEnv):
         self._frame_stacks = {a: deque(maxlen=self._num_stack) for a in self.agents}
 
         obs = {a: self._process_obs(a, self._read_screen(self._games[a])) for a in self.agents}
-        infos = {a: {} for a in self.agents}
+        infos: dict[str, dict[str, Any]] = {a: {} for a in self.agents}
         return obs, infos
 
     def step(
@@ -300,7 +304,7 @@ class DoomMultiplayerEnv(ParallelEnv):
 
         return obs, rewards, terms, truncs, infos
 
-    def render(self) -> dict[str, np.ndarray]:  # type: ignore[override]
+    def render(self) -> dict[str, np.ndarray]:
         # Return every player's current RGB frame so callers can stitch a
         # grid view for recording. Deviation from the single-agent ``render``
         # signature is intentional - PettingZoo doesn't mandate a shape here.
@@ -327,10 +331,11 @@ class DoomMultiplayerEnv(ParallelEnv):
             # probe via the same trick as in ``DoomEnv`` by reading the
             # default 320x240 that ViZDoom loads when the cfg doesn't override.
             return gym.spaces.Box(low=0, high=255, shape=(240, 320, 3), dtype=np.uint8)
-        if self._num_stack > 1:
-            shape = (self._num_stack, *self._resize_shape)
-        else:
-            shape = self._resize_shape
+        shape: tuple[int, ...] = (
+            (self._num_stack, *self._resize_shape)
+            if self._num_stack > 1
+            else self._resize_shape
+        )
         return gym.spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
 
     def _start_games(self, seed: int | None) -> None:
