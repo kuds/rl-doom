@@ -88,9 +88,16 @@ def _build_model(
     device: str | torch.device,
     seed: int,
     verbose: int = 0,
+    policy_kwargs: dict[str, Any] | None = None,
 ) -> BaseAlgorithm:
-    """Instantiate a PPO or DQN model from a flat hyperparam dict."""
+    """Instantiate a PPO or DQN model from a flat hyperparam dict.
+
+    ``policy_kwargs`` is passed straight through to SB3. Pass ``None`` (the
+    default) to keep SB3's baked-in policy defaults (NatureCNN with
+    features_dim=512 and no extra MLP layers).
+    """
     algo_norm = algo.lower()
+    pk = policy_kwargs or {}
     if algo_norm == "ppo":
         return PPO(
             "CnnPolicy",
@@ -109,6 +116,7 @@ def _build_model(
             device=device,
             seed=seed,
             verbose=verbose,
+            policy_kwargs=pk,
         )
     if algo_norm == "dqn":
         return DQN(
@@ -131,8 +139,39 @@ def _build_model(
             device=device,
             seed=seed,
             verbose=verbose,
+            policy_kwargs=pk,
         )
     raise ValueError(f"Unknown algo {algo!r}; expected 'ppo' or 'dqn'.")
+
+
+def policy_kwargs_from_config(policy_cfg: dict[str, Any] | None) -> dict[str, Any]:
+    """Translate a YAML ``policy:`` block into SB3 ``policy_kwargs``.
+
+    The YAML exposes two ergonomic fields — ``features_dim`` (NatureCNN final
+    FC width) and ``net_arch`` (extra MLP layers after the feature extractor)
+    — and this helper reshapes them into the nested dict SB3 actually
+    consumes. Unset fields are omitted so SB3's own defaults win.
+
+    ``policy_cfg`` may also contain already-nested keys (e.g.
+    ``features_extractor_kwargs``, ``activation_fn``) that pass through
+    unchanged, letting callers reach less-common knobs without another
+    round of plumbing.
+    """
+    if not policy_cfg:
+        return {}
+    out: dict[str, Any] = {}
+    # Flat ergonomic keys.
+    features_dim = policy_cfg.get("features_dim")
+    if features_dim is not None:
+        out.setdefault("features_extractor_kwargs", {})["features_dim"] = int(features_dim)
+    if "net_arch" in policy_cfg and policy_cfg["net_arch"] is not None:
+        out["net_arch"] = policy_cfg["net_arch"]
+    # Pass-through for anything the caller nested themselves.
+    for k, v in policy_cfg.items():
+        if k in {"features_dim", "net_arch"}:
+            continue
+        out[k] = v
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +505,7 @@ def train_sb3(
     on_complete: Callable[[Path], None] | None = None,
     doom_skill: int | None = None,
     num_bots: int = 0,
+    policy_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Train a single SB3 model end-to-end and write *all* artifacts now.
 
@@ -552,6 +592,7 @@ def train_sb3(
         device=device,
         seed=seed,
         verbose=verbose,
+        policy_kwargs=policy_kwargs,
     )
     # Force CSV + TensorBoard output so we can rebuild plots post-hoc. SB3's
     # ``configure`` writes both formats into the same folder, so we route

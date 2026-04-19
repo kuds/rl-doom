@@ -33,3 +33,7 @@ training:
 eval:
   eval_freq: 25000
   n_episodes: 30
+
+policy:
+  features_dim: 512             # NatureCNN final FC width (SB3 default)
+  net_arch: []                  # extra MLP layers after the features extractor
