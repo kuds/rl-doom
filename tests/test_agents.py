@@ -224,4 +224,6 @@ def test_build_model_recurrent_ppo_returns_recurrent_ppo_instance() -> None:
     # SB3-contrib's private state-shape attributes.
     lstm_actor = model.policy.lstm_actor
     assert lstm_actor is not None
-    assert lstm_actor.hidden_size == 32  # type: ignore[union-attr]
+    # ``getattr`` keeps mypy happy across SB3 versions where
+    # ``lstm_actor`` is typed as the generic ``nn.Module | Tensor`` union.
+    assert getattr(lstm_actor, "hidden_size", None) == 32
