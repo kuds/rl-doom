@@ -207,6 +207,38 @@ def load_config(run_dir: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# YAML scenario configs (configs/<algo>_<scenario>.yaml)
+# ---------------------------------------------------------------------------
+
+
+REPO_CONFIGS = REPO_ROOT / "configs"
+
+
+def load_yaml_config(path: str | Path) -> dict[str, Any]:
+    """Load a ``configs/<algo>_<scenario>.yaml`` file.
+
+    Accepts either an absolute/relative path to a YAML file or a bare stem
+    like ``"dqn_basic"`` — the latter is resolved against the repo's
+    ``configs/`` directory.
+    """
+    import yaml
+
+    p = Path(path)
+    if not p.suffix:
+        p = REPO_CONFIGS / f"{p.name}.yaml"
+    elif not p.is_absolute() and not p.exists():
+        # Allow ``"dqn_basic.yaml"`` as a shorthand for ``configs/dqn_basic.yaml``.
+        candidate = REPO_CONFIGS / p
+        if candidate.exists():
+            p = candidate
+    with p.open() as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Expected a mapping at top level of {p}, got {type(cfg).__name__}")
+    return cfg
+
+
+# ---------------------------------------------------------------------------
 # Sweeps
 # ---------------------------------------------------------------------------
 

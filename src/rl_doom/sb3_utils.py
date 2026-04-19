@@ -505,6 +505,10 @@ def train_sb3(
     on_complete: Callable[[Path], None] | None = None,
     doom_skill: int | None = None,
     num_bots: int = 0,
+    resize_shape: tuple[int, int] = (84, 84),
+    frame_skip: int = 4,
+    num_stack: int = 4,
+    use_compound_actions: bool = True,
     policy_kwargs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Train a single SB3 model end-to-end and write *all* artifacts now.
@@ -551,6 +555,10 @@ def train_sb3(
         n_envs=n_envs,
         seed=seed,
         monitor_dir=str(monitor_dir),
+        resize_shape=resize_shape,
+        frame_skip=frame_skip,
+        num_stack=num_stack,
+        use_compound_actions=use_compound_actions,
         doom_skill=doom_skill,
         num_bots=num_bots,
     )
@@ -561,6 +569,10 @@ def train_sb3(
         n_envs=1,
         seed=seed + 10_000,
         monitor_dir=None,
+        resize_shape=resize_shape,
+        frame_skip=frame_skip,
+        num_stack=num_stack,
+        use_compound_actions=use_compound_actions,
         doom_skill=doom_skill,
         num_bots=num_bots,
     )
