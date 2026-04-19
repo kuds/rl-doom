@@ -26,7 +26,11 @@ SCENARIO_LABELS: dict[str, str] = {
     "predict_position": "Predict Position",
 }
 
-ALGO_LABELS: dict[str, str] = {"dqn": "Double DQN", "ppo": "PPO"}
+ALGO_LABELS: dict[str, str] = {
+    "dqn": "Double DQN",
+    "ppo": "PPO",
+    "recurrent_ppo": "Recurrent PPO (LSTM)",
+}
 
 
 def _fmt_duration(seconds: float) -> str:

@@ -1,0 +1,45 @@
+# Hyperparameters for Recurrent PPO (sb3-contrib, CnnLstmPolicy) on Deathmatch.
+# Paired with configs/ppo_deathmatch.yaml. Deathmatch combines navigation,
+# aiming, and combat over long horizons; the LSTM should help the agent
+# remember enemy positions, ammo state, and recently-explored map areas
+# beyond what a 4-frame stack captures.
+
+scenario: deathmatch
+algorithm: recurrent_ppo
+seed: 42
+
+env:
+  resize_shape: [84, 84]
+  frame_skip: 4
+  num_stack: 4
+  n_envs: 8
+  doom_skill: 3
+  num_bots: 0
+
+hyperparams:
+  lr: 2.5e-4
+  n_steps: 1024
+  batch_size: 256
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  entropy_coef: 0.03            # matches ppo_deathmatch — keep exploration
+                                # alive while the policy learns the compound
+                                # action set
+  value_coef: 0.5
+  max_grad_norm: 0.5
+
+training:
+  total_timesteps: 2000000
+  checkpoint_freq: 250000
+
+eval:
+  eval_freq: 25000
+  n_episodes: 10
+
+policy:
+  features_dim: 512
+  net_arch: []
+  lstm_hidden_size: 256
+  n_lstm_layers: 1

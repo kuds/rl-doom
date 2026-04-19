@@ -28,6 +28,7 @@ from typing import Any, Callable, cast
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from sb3_contrib import RecurrentPPO
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import (
@@ -40,6 +41,12 @@ from stable_baselines3.common.vec_env import VecNormalize
 
 from rl_doom.env import make_sb3_env, make_wrapped_env
 from rl_doom.paths import mark_run_status, update_latest_symlink
+
+# Algorithms that use a Generalized Advantage Estimation rollout buffer and
+# benefit from VecNormalize reward scaling. RecurrentPPO is the LSTM variant
+# of PPO from sb3-contrib; it shares PPO's hyperparameters and adds an
+# ``lstm_hidden_size`` knob via policy_kwargs.
+_PPO_FAMILY = {"ppo", "recurrent_ppo"}
 
 # ---------------------------------------------------------------------------
 # GPU / environment metadata
@@ -98,9 +105,11 @@ def _build_model(
     """
     algo_norm = algo.lower()
     pk = policy_kwargs or {}
-    if algo_norm == "ppo":
-        return PPO(
-            "CnnPolicy",
+    if algo_norm in {"ppo", "recurrent_ppo"}:
+        cls = RecurrentPPO if algo_norm == "recurrent_ppo" else PPO
+        policy = "CnnLstmPolicy" if algo_norm == "recurrent_ppo" else "CnnPolicy"
+        return cls(
+            policy,
             vec_env,
             learning_rate=hyperparams["lr"],
             n_steps=hyperparams["n_steps"],
@@ -141,7 +150,9 @@ def _build_model(
             verbose=verbose,
             policy_kwargs=pk,
         )
-    raise ValueError(f"Unknown algo {algo!r}; expected 'ppo' or 'dqn'.")
+    raise ValueError(
+        f"Unknown algo {algo!r}; expected 'ppo', 'recurrent_ppo', or 'dqn'.",
+    )
 
 
 def policy_kwargs_from_config(policy_cfg: dict[str, Any] | None) -> dict[str, Any]:
@@ -166,9 +177,17 @@ def policy_kwargs_from_config(policy_cfg: dict[str, Any] | None) -> dict[str, An
         out.setdefault("features_extractor_kwargs", {})["features_dim"] = int(features_dim)
     if "net_arch" in policy_cfg and policy_cfg["net_arch"] is not None:
         out["net_arch"] = policy_cfg["net_arch"]
+    # Recurrent-only knobs. Harmless on non-recurrent policies because they
+    # won't be present in those YAML files; passing them to a non-LSTM policy
+    # would raise, so guard at the YAML layer (only recurrent_ppo configs set
+    # these keys).
+    if "lstm_hidden_size" in policy_cfg and policy_cfg["lstm_hidden_size"] is not None:
+        out["lstm_hidden_size"] = int(policy_cfg["lstm_hidden_size"])
+    if "n_lstm_layers" in policy_cfg and policy_cfg["n_lstm_layers"] is not None:
+        out["n_lstm_layers"] = int(policy_cfg["n_lstm_layers"])
     # Pass-through for anything the caller nested themselves.
     for k, v in policy_cfg.items():
-        if k in {"features_dim", "net_arch"}:
+        if k in {"features_dim", "net_arch", "lstm_hidden_size", "n_lstm_layers"}:
             continue
         out[k] = v
     return out
@@ -325,9 +344,10 @@ def _plot_learning_curves(
     ax.set_title("Episode Lengths")
 
     # Pick algorithm-specific panels. SB3 key names are stable.
+    # RecurrentPPO logs the same train/* keys as PPO, so they share a panel set.
     algo_norm = algo.lower()
     panel_defs: list[tuple[tuple[int, int], str, str, str]]
-    if algo_norm == "ppo":
+    if algo_norm in _PPO_FAMILY:
         panel_defs = [
             ((0, 2), "train/policy_gradient_loss", "Policy Loss", "PPO Policy Loss"),
             ((1, 0), "train/value_loss", "Value Loss", "Value Function Loss"),
@@ -447,6 +467,11 @@ def _record_video(
         )
         return frame
 
+    # Recurrent policies (RecurrentPPO) thread an LSTM hidden state across
+    # ``predict`` calls and need an ``episode_start`` flag so they can zero
+    # out the state at episode boundaries. SB3's ``predict`` API accepts these
+    # arguments on every policy — they're just no-ops for non-recurrent ones —
+    # so we always pass them and keep one code path.
     frames: list[np.ndarray] = []
     separator: np.ndarray | None = None
     for ep in range(max(n_episodes, 1)):
@@ -459,11 +484,19 @@ def _record_video(
         frames.append(first)
         done = False
         step = 0
+        lstm_states: Any = None
+        episode_start = np.array([True])
         while not done and step < max_steps:
-            action, _ = model.predict(obs, deterministic=True)
+            action, lstm_states = model.predict(
+                obs,
+                state=lstm_states,
+                episode_start=episode_start,
+                deterministic=True,
+            )
             obs, _, terminated, truncated, _ = env.step(int(action))
             frames.append(_frame())
             done = terminated or truncated
+            episode_start = np.array([False])
             step += 1
     env.close()
 
@@ -587,7 +620,7 @@ def train_sb3(
     # The eval env is wrapped (training=False, norm_reward=False) only to
     # satisfy SB3's ``sync_envs_normalization`` invariant; its reported
     # rewards remain in the original raw scale.
-    if algo.lower() == "ppo":
+    if algo.lower() in _PPO_FAMILY:
         vec_env = VecNormalize(
             vec_env, norm_obs=False, norm_reward=True, clip_reward=10.0,
         )
@@ -687,7 +720,13 @@ def train_sb3(
         # fall back to the in-memory (final-step) model if eval didn't run.
         best_ckpt = ckpt_dir / "best" / "best_model.zip"
         if best_ckpt.exists():
-            cls = PPO if algo.lower() == "ppo" else DQN
+            algo_norm = algo.lower()
+            if algo_norm == "recurrent_ppo":
+                cls: type[BaseAlgorithm] = RecurrentPPO
+            elif algo_norm == "ppo":
+                cls = PPO
+            else:
+                cls = DQN
             video_model: BaseAlgorithm = cls.load(str(best_ckpt), device=device)
         else:
             video_model = model
