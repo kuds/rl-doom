@@ -38,3 +38,9 @@ eval:
 policy:
   features_dim: 512             # NatureCNN final FC width (SB3 default)
   net_arch: []                  # extra MLP layers after the features extractor
+
+# See ``configs/ppo_deadly_corridor_curriculum.yaml`` for the curriculum-
+# learning variant of this config (same hyperparameters, skill ramp 1→2→3
+# instead of a fixed skill 3). Both YAMLs are designed to be run in the
+# same notebook / matrix so baseline and curriculum results land next to
+# each other in ``training_jobs/deadly_corridor/ppo/runs/``.

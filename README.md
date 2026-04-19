@@ -100,6 +100,64 @@ python -m rl_doom.train --config configs/recurrent_ppo_deadly_corridor.yaml
 - Designed for partially-observable scenarios where a 4-frame stack isn't enough memory (deadly_corridor enemies leaving FOV, deathmatch map exploration)
 - Wall-clock slower than PPO at the same step count because the LSTM forward/backward serialises within each rollout segment
 
+## Skill Curriculum Learning
+
+Deadly Corridor is dominated by the death penalty at Doom skill 3 — the
+imps kill the agent before it discovers the "push forward + shoot"
+gradient. Every scenario config now accepts an optional `curriculum:`
+block that ramps `doom_skill` up during training once the agent clears
+a per-stage eval threshold:
+
+```yaml
+curriculum:
+  enabled: true
+  min_evals_between_promotions: 2
+  sync_eval_env: true
+  stages:
+    - {skill: 1, promote_at: 40.0}   # start easy
+    - {skill: 2, promote_at: 60.0}
+    - {skill: 3, promote_at: null}   # terminal
+```
+
+Paired "baseline vs. curriculum" YAMLs live under `configs/`:
+
+| Baseline | Curriculum |
+|---|---|
+| `ppo_deadly_corridor.yaml` | `ppo_deadly_corridor_curriculum.yaml` |
+| `dqn_deadly_corridor.yaml` | `dqn_deadly_corridor_curriculum.yaml` |
+| `recurrent_ppo_deadly_corridor.yaml` | `recurrent_ppo_deadly_corridor_curriculum.yaml` |
+
+Under the hood, `SkillCurriculumCallback`
+(`src/rl_doom/curriculum.py`) watches the SB3 `EvalCallback` and, when
+the eval mean clears the current stage's `promote_at`, calls
+`DoomGame.set_doom_skill` on every training and eval worker. The
+promotion timeline is saved to `metrics/curriculum.json` inside the run
+directory and also logged to TensorBoard as `curriculum/skill`.
+
+## Experiment Matrix Runner
+
+`scripts/run_experiment_matrix.py` runs a grid of (variant × seed) combos
+from a single YAML so a baseline-vs-curriculum comparison across
+algorithms can be kicked off in one command:
+
+```bash
+python -m scripts.run_experiment_matrix \
+    --matrix configs/matrix/deadly_corridor_curriculum.yaml
+```
+
+Each cell writes to the standard
+`training_jobs/<scenario>/<algo>/runs/<timestamp>_seed<N>_<matrix>_<variant>/`
+layout, so TensorBoard's `--logdir training_jobs/deadly_corridor/` shows
+every variant side-by-side. A roll-up CSV lands at
+`training_jobs/_matrix/<matrix_name>.csv` with one row per run:
+
+```
+matrix,variant,scenario,algo,seed,mean_eval_reward,best_eval_reward,success_rate,curriculum_final_skill,wall_time_seconds,run_dir
+```
+
+Pass `--dry-run` to expand the grid without training, or
+`--total-timesteps 50000` for a smoke test.
+
 ## Visual Pipeline
 
 ```
