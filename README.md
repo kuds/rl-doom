@@ -21,13 +21,14 @@ rl-doom/
 │   ├── 01_environment_exploration.ipynb   # Env setup, wrappers, random baseline
 │   ├── 02_dqn_training.ipynb              # Double DQN training + LR sweep
 │   ├── 03_ppo_training.ipynb              # PPO training loop
-│   └── 04_analysis_and_results.ipynb      # Cross-scenario comparison, saliency, GIFs
+│   ├── 04_recurrent_ppo_training.ipynb    # Recurrent PPO (CnnLstmPolicy) training loop
+│   └── 05_analysis_and_results.ipynb      # Cross-scenario comparison, saliency, GIFs
 ├── src/rl_doom/                           # Core library
 │   ├── env.py                             # Gymnasium wrappers (DoomEnv, FrameStack, etc.)
 │   ├── models.py                          # CNN networks (DQN, Actor-Critic)
 │   ├── agents/
 │   │   ├── dqn.py                         # Double DQN agent
-│   │   └── ppo.py                         # PPO agent
+│   │   └── ppo.py                         # PPO agent (Recurrent PPO uses sb3-contrib directly)
 │   ├── replay_buffer.py                   # Experience replay for DQN
 │   ├── train.py                           # CLI training entry point
 │   └── evaluate.py                        # Evaluation & episode recording
@@ -65,7 +66,8 @@ Run the notebooks in order:
 1. **01 — Environment Exploration**: Verify ViZDoom installation, visualize observations, run random baseline
 2. **02 — DQN Training**: Train Double DQN, plot learning curves, run a hyperparameter sweep
 3. **03 — PPO Training**: Train PPO, log policy/value losses and entropy
-4. **04 — Analysis**: Cross-scenario comparison table, multi-seed evaluation, saliency maps, GIF generation
+4. **04 — Recurrent PPO Training**: Train RecurrentPPO (`sb3_contrib.RecurrentPPO`, CnnLstmPolicy) for memory-dependent scenarios
+5. **05 — Analysis**: Cross-algorithm × cross-scenario comparison table, multi-seed evaluation, saliency maps, GIF generation
 
 ### CLI
 
@@ -74,6 +76,7 @@ Pick any `(algorithm, scenario)` pair:
 ```bash
 python -m rl_doom.train --config configs/dqn_basic.yaml
 python -m rl_doom.train --config configs/ppo_deadly_corridor.yaml
+python -m rl_doom.train --config configs/recurrent_ppo_deadly_corridor.yaml
 ```
 
 ## Algorithms
@@ -90,6 +93,12 @@ python -m rl_doom.train --config configs/ppo_deadly_corridor.yaml
 - GAE (Generalized Advantage Estimation)
 - Entropy bonus for exploration
 - Mini-batch updates over collected rollouts
+
+### Recurrent PPO (sb3-contrib)
+- `CnnLstmPolicy`: NatureCNN feature extractor → LSTM (256-d hidden by default) → actor + critic heads
+- Same clipped surrogate + GAE as PPO; LSTM hidden state is reset at episode boundaries via `episode_starts`
+- Designed for partially-observable scenarios where a 4-frame stack isn't enough memory (deadly_corridor enemies leaving FOV, deathmatch map exploration)
+- Wall-clock slower than PPO at the same step count because the LSTM forward/backward serialises within each rollout segment
 
 ## Visual Pipeline
 
@@ -111,19 +120,19 @@ All notebooks save artifacts to disk for reproducibility:
 
 ### Metrics logged per algorithm
 
-| Metric | DQN | PPO |
-|--------|-----|-----|
-| Episode rewards | Yes | Yes |
-| Episode lengths | Yes | Yes |
-| Training loss | Yes (Huber) | Yes (policy + value) |
-| Epsilon schedule | Yes | — |
-| Mean Q-values | Yes | — |
-| Action distribution | Yes | — |
-| Policy entropy | — | Yes |
-| Clip fraction | — | Yes |
-| Eval rewards + lengths | Yes | Yes |
-| Wall-clock time & FPS | Yes | Yes |
-| Reproducibility metadata | Yes | Yes |
+| Metric | DQN | PPO | Recurrent PPO |
+|--------|-----|-----|---------------|
+| Episode rewards | Yes | Yes | Yes |
+| Episode lengths | Yes | Yes | Yes |
+| Training loss | Yes (Huber) | Yes (policy + value) | Yes (policy + value) |
+| Epsilon schedule | Yes | — | — |
+| Mean Q-values | Yes | — | — |
+| Action distribution | Yes | — | — |
+| Policy entropy | — | Yes | Yes |
+| Clip fraction | — | Yes | Yes |
+| Eval rewards + lengths | Yes | Yes | Yes |
+| Wall-clock time & FPS | Yes | Yes | Yes |
+| Reproducibility metadata | Yes | Yes | Yes |
 
 ### TensorBoard
 

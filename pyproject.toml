@@ -19,6 +19,7 @@ dependencies = [
     "tensorboard",
     "matplotlib",
     "stable-baselines3>=2.3",
+    "sb3-contrib>=2.3",
     "pettingzoo>=1.24",
 ]
 
@@ -72,6 +73,8 @@ module = [
     "google.colab.*",
     "stable_baselines3",
     "stable_baselines3.*",
+    "sb3_contrib",
+    "sb3_contrib.*",
     "pettingzoo",
     "pettingzoo.*",
     "yaml",

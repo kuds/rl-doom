@@ -1,0 +1,44 @@
+# Hyperparameters for Recurrent PPO (sb3-contrib, CnnLstmPolicy) on the Basic scenario.
+# Paired with configs/ppo_basic.yaml — same scenario, same total step budget,
+# so the LSTM-vs-stacked-frames comparison is apples-to-apples.
+# Defaults tuned for an L4 GPU + high-memory Colab runtime.
+
+scenario: basic
+algorithm: recurrent_ppo
+seed: 42
+
+env:
+  resize_shape: [84, 84]
+  frame_skip: 4
+  num_stack: 4                  # stacking is still useful early on; the LSTM
+                                # picks up longer-horizon memory beyond the stack
+  n_envs: 8
+  doom_skill: 3
+  num_bots: 0
+
+hyperparams:
+  lr: 2.5e-4
+  n_steps: 1024
+  batch_size: 256               # must be a multiple of n_envs for RecurrentPPO
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+
+training:
+  total_timesteps: 500000
+  checkpoint_freq: 250000
+
+eval:
+  eval_freq: 25000
+  n_episodes: 10
+
+policy:
+  features_dim: 512
+  net_arch: []
+  lstm_hidden_size: 256         # CnnLstmPolicy default; the LSTM sits on top
+                                # of the NatureCNN features
+  n_lstm_layers: 1

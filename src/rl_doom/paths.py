@@ -259,7 +259,7 @@ def new_sweep_variant_dir(sweep_dir: Path, variant_name: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Analysis directories (notebook 04 outputs)
+# Analysis directories (notebook 05 outputs)
 # ---------------------------------------------------------------------------
 
 
