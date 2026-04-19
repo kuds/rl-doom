@@ -33,4 +33,4 @@ training:
 
 eval:
   eval_freq: 10000
-  n_episodes: 10
+  n_episodes: 30

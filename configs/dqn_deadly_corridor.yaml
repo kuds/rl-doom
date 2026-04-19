@@ -14,7 +14,7 @@ env:
   n_envs: 1
 
 hyperparams:
-  lr: 1.0e-4
+  lr: 5.0e-5
   buffer_size: 200000
   learning_starts: 10000
   batch_size: 64
@@ -34,4 +34,4 @@ training:
 
 eval:
   eval_freq: 20000
-  n_episodes: 10
+  n_episodes: 30
