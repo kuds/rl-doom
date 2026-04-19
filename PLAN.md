@@ -42,7 +42,8 @@ rl-doom/
 │   ├── 01_environment_exploration.ipynb
 │   ├── 02_dqn_training.ipynb
 │   ├── 03_ppo_training.ipynb
-│   └── 04_analysis_and_results.ipynb
+│   ├── 04_recurrent_ppo_training.ipynb
+│   └── 05_analysis_and_results.ipynb
 ├── scripts/
 │   ├── train.sh                # CLI training launcher
 │   └── record_gameplay.sh
@@ -157,9 +158,14 @@ Standard Nature-DQN architecture, proven for Doom-scale visual inputs.
 - Compare sample efficiency vs DQN
 - Visualize policy entropy and value loss over time
 
-### `04_analysis_and_results.ipynb`
-- Cross-scenario comparison table
-- DQN vs PPO head-to-head
+### `04_recurrent_ppo_training.ipynb`
+- Train Recurrent PPO (`sb3_contrib.RecurrentPPO`, CnnLstmPolicy) on the same four scenarios
+- LSTM hidden state on top of NatureCNN features for partial observability
+- Paired with PPO configs so the LSTM-vs-stacked-frames comparison is apples-to-apples
+
+### `05_analysis_and_results.ipynb`
+- Cross-scenario comparison table covering DQN, PPO, and Recurrent PPO
+- Three-way head-to-head training curves
 - Statistical analysis (mean ± std over N seeds)
 - Qualitative analysis: what the agent learned (saliency maps)
 - GIF/video generation of best runs
@@ -197,8 +203,9 @@ Standard Nature-DQN architecture, proven for Doom-scale visual inputs.
 | 6 | PPO agent | **P1** | ✓ Done |
 | 7 | Notebook 03 (PPO training) | **P1** | ✓ Done |
 | 8 | Evaluation/recording tools | **P1** | ✓ Done |
-| 9 | Notebook 04 (analysis) | **P2** | ✓ Done |
-| 10 | Tests | **P2** | Not started |
+| 9 | Recurrent PPO (sb3-contrib) + Notebook 04 | **P1** | ✓ Done |
+| 10 | Notebook 05 (analysis) | **P2** | ✓ Done |
+| 11 | Tests | **P2** | Not started |
 | 11 | Advanced: Prioritized replay, Dueling DQN, curiosity | **P3** | Not started |
 
 ---
