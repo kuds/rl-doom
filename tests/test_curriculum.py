@@ -24,7 +24,6 @@ from rl_doom.curriculum import (  # noqa: E402 — import after skip guard
     parse_curriculum_config,
 )
 
-
 # ---------------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------------
