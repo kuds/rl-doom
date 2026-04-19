@@ -101,7 +101,7 @@ def _prime(
     model here exposes ``get_env`` and ``logger`` which the properties
     return.
     """
-    callback.model = SimpleNamespace(
+    callback.model = SimpleNamespace(  # type: ignore[assignment]
         num_timesteps=num_timesteps,
         get_env=lambda: vec_env,
         logger=_FakeLogger(),

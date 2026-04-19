@@ -39,8 +39,8 @@ def _load_matrix_module():
 
 def test_deep_merge_leaves_base_untouched() -> None:
     matrix = _load_matrix_module()
-    base = {"hyperparams": {"lr": 1e-4, "gamma": 0.99}, "env": {"n_envs": 1}}
-    overrides = {"hyperparams": {"lr": 5e-4}}
+    base: dict = {"hyperparams": {"lr": 1e-4, "gamma": 0.99}, "env": {"n_envs": 1}}
+    overrides: dict = {"hyperparams": {"lr": 5e-4}}
     merged = matrix._deep_merge(base, overrides)
 
     # Returned dict has the override applied.
