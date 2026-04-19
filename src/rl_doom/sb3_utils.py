@@ -42,6 +42,11 @@ from stable_baselines3.common.vec_env import VecNormalize
 # binary isn't always available where ``sb3_utils`` is needed (e.g. lean
 # test runners that only exercise the YAML -> policy_kwargs translation).
 # Defer that import to the two functions that actually build envs.
+from rl_doom.curriculum import (
+    CurriculumStage,
+    SkillCurriculumCallback,
+    parse_curriculum_config,
+)
 from rl_doom.paths import mark_run_status, update_latest_symlink
 
 # Algorithms that use a Generalized Advantage Estimation rollout buffer and
@@ -552,6 +557,7 @@ def train_sb3(
     num_stack: int = 4,
     use_compound_actions: bool = True,
     policy_kwargs: dict[str, Any] | None = None,
+    curriculum: dict[str, Any] | list[CurriculumStage] | None = None,
 ) -> dict[str, Any]:
     """Train a single SB3 model end-to-end and write *all* artifacts now.
 
@@ -577,6 +583,14 @@ def train_sb3(
     on_complete :
         Optional hook invoked with ``run_dir`` after all artifacts are written
         (e.g. to display the video in a Jupyter cell).
+    curriculum :
+        Optional skill-curriculum specification. Accepts either a raw YAML
+        dict (``{"stages": [...], "min_evals_between_promotions": ...}``) or
+        a pre-parsed list of :class:`rl_doom.curriculum.CurriculumStage`.
+        When supplied, the curriculum's first-stage skill overrides
+        ``doom_skill`` at training start and a
+        :class:`~rl_doom.curriculum.SkillCurriculumCallback` is appended to
+        the callback list.
     """
     run_dir = Path(run_dir)
     tb_dir = run_dir / "tensorboard"
@@ -589,6 +603,30 @@ def train_sb3(
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # --- curriculum (parse early so the first stage can override skill) -
+    curriculum_stages: list[CurriculumStage] | None
+    curriculum_kwargs: dict[str, Any] = {}
+    if curriculum is None:
+        curriculum_stages = None
+    elif isinstance(curriculum, list):
+        curriculum_stages = curriculum
+    else:
+        curriculum_stages = parse_curriculum_config(curriculum)
+        curriculum_kwargs = {
+            k: curriculum[k]
+            for k in ("min_evals_between_promotions", "sync_eval_env")
+            if k in curriculum
+        }
+    if curriculum_stages:
+        # The curriculum owns the initial difficulty — override any
+        # ``doom_skill`` the caller passed so train + eval envs agree.
+        if doom_skill is not None and doom_skill != curriculum_stages[0].skill:
+            print(
+                f"[train_sb3] curriculum enabled: overriding doom_skill="
+                f"{doom_skill} with stage-0 skill={curriculum_stages[0].skill}",
+            )
+        doom_skill = curriculum_stages[0].skill
 
     # --- envs ---------------------------------------------------------
     from rl_doom.env import make_sb3_env
@@ -657,17 +695,18 @@ def train_sb3(
     model.set_logger(configure(str(tb_dir), ["stdout", "csv", "tensorboard"]))
 
     termination_tracker = TerminationTracker()
-    callbacks = [
-        EvalCallback(
-            eval_env,
-            best_model_save_path=str(ckpt_dir / "best"),
-            log_path=str(metrics_dir),
-            eval_freq=max(eval_freq // max(n_envs, 1), 1),
-            n_eval_episodes=eval_episodes,
-            deterministic=True,
-            render=False,
-            verbose=verbose,
-        ),
+    eval_cb = EvalCallback(
+        eval_env,
+        best_model_save_path=str(ckpt_dir / "best"),
+        log_path=str(metrics_dir),
+        eval_freq=max(eval_freq // max(n_envs, 1), 1),
+        n_eval_episodes=eval_episodes,
+        deterministic=True,
+        render=False,
+        verbose=verbose,
+    )
+    callbacks: list[BaseCallback] = [
+        eval_cb,
         CheckpointCallback(
             save_freq=max(checkpoint_freq // max(n_envs, 1), 1),
             save_path=str(ckpt_dir),
@@ -676,6 +715,14 @@ def train_sb3(
         ),
         termination_tracker,
     ]
+    # Registered AFTER the eval callback so ``evaluations_timesteps`` /
+    # ``last_mean_reward`` are populated before the curriculum reads them.
+    curriculum_cb: SkillCurriculumCallback | None = None
+    if curriculum_stages:
+        curriculum_cb = SkillCurriculumCallback(
+            eval_cb, curriculum_stages, verbose=verbose, **curriculum_kwargs,
+        )
+        callbacks.append(curriculum_cb)
 
     # --- train --------------------------------------------------------
     t_start = time.time()
@@ -704,6 +751,21 @@ def train_sb3(
     episodes = _collect_episode_stats(monitor_dir)
     evaluations = _load_evaluations(run_dir)
     _write_termination_report(termination_tracker, metrics_dir)
+    if curriculum_cb is not None:
+        (metrics_dir / "curriculum.json").write_text(
+            json.dumps(
+                {
+                    "stages": [
+                        {"skill": s.skill, "promote_at": s.promote_at}
+                        for s in curriculum_stages or []
+                    ],
+                    "promotions": curriculum_cb.promotions,
+                    "final_stage_index": curriculum_cb.current_stage_index,
+                    "final_skill": curriculum_cb.current_skill,
+                },
+                indent=2,
+            ),
+        )
 
     np.savez(
         metrics_dir / "training.npz",
@@ -783,6 +845,12 @@ def train_sb3(
         "success_rate": success_rate,
         "video_path": video_path,
         "learning_curves_path": learning_curves_path,
+        "curriculum_final_skill": (
+            curriculum_cb.current_skill if curriculum_cb else None
+        ),
+        "curriculum_promotions": (
+            curriculum_cb.promotions if curriculum_cb else None
+        ),
     }
 
     if on_complete is not None:

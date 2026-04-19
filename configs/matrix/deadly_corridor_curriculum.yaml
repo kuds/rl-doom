@@ -1,0 +1,43 @@
+# Compare baseline vs. skill-curriculum on Deadly Corridor across
+# DQN, PPO, and Recurrent PPO, over three seeds per variant.
+#
+# Run with:
+#     python -m scripts.run_experiment_matrix \
+#         --matrix configs/matrix/deadly_corridor_curriculum.yaml
+#
+# A dry run (no training, just prints the expanded grid):
+#     python -m scripts.run_experiment_matrix \
+#         --matrix configs/matrix/deadly_corridor_curriculum.yaml \
+#         --dry-run
+#
+# All runs write to training_jobs/deadly_corridor/<algo>/runs/, with the
+# matrix name + variant embedded in each run dir name so TensorBoard's
+# --logdir training_jobs/deadly_corridor/ shows every result side by side.
+# A single matrix_summary.csv lands at training_jobs/_matrix/<name>.csv
+# for quick grep/pandas analysis.
+
+name: deadly_corridor_curriculum
+
+# 3 seeds × 6 variants = 18 runs. Drop seeds before scheduling a real
+# compute-limited session; the default here targets a multi-GPU or
+# overnight local run.
+seeds: [42, 123, 777]
+
+variants:
+  - name: ppo_baseline
+    base_config: ppo_deadly_corridor
+
+  - name: ppo_curriculum
+    base_config: ppo_deadly_corridor_curriculum
+
+  - name: dqn_baseline
+    base_config: dqn_deadly_corridor
+
+  - name: dqn_curriculum
+    base_config: dqn_deadly_corridor_curriculum
+
+  - name: recurrent_ppo_baseline
+    base_config: recurrent_ppo_deadly_corridor
+
+  - name: recurrent_ppo_curriculum
+    base_config: recurrent_ppo_deadly_corridor_curriculum
