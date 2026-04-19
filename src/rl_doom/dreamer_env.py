@@ -46,7 +46,7 @@ class DreamerDoomEnv:
         doom_skill: int | None = None,
         num_bots: int = 0,
     ) -> None:
-        base = DoomEnv(
+        base: gym.Env = DoomEnv(
             scenario=scenario,
             use_compound_actions=use_compound_actions,
             doom_skill=doom_skill,
@@ -65,11 +65,15 @@ class DreamerDoomEnv:
         self._img_shape = img_shape
         self._grayscale = grayscale
 
+        # ``is_first`` / ``is_terminal`` are semantic booleans but Gymnasium's
+        # Box accepts only numeric dtypes in its type stubs. We advertise them
+        # as uint8 {0, 1} here; the dict values at runtime are ``np.bool_``
+        # which Dreamer consumes as-is.
         self.observation_space = gym.spaces.Dict(
             {
                 "image": gym.spaces.Box(0, 255, img_shape, dtype=np.uint8),
-                "is_first": gym.spaces.Box(0, 1, (), dtype=bool),
-                "is_terminal": gym.spaces.Box(0, 1, (), dtype=bool),
+                "is_first": gym.spaces.Box(0, 1, (), dtype=np.uint8),
+                "is_terminal": gym.spaces.Box(0, 1, (), dtype=np.uint8),
             }
         )
         self.action_space = self._env.action_space
