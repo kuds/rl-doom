@@ -29,11 +29,11 @@ hyperparams:
 
 training:
   total_timesteps: 1000000
-  checkpoint_freq: 100000
+  checkpoint_freq: 250000
 
 eval:
   eval_freq: 25000
-  n_episodes: 30
+  n_episodes: 10
 
 policy:
   features_dim: 512             # NatureCNN final FC width (SB3 default)

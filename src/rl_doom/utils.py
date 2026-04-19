@@ -1,14 +1,14 @@
 """Shared utilities for training artifact generation.
 
-Centralizes logging, plotting, metadata collection, and Google Drive
-persistence so notebooks stay concise and consistent.
+Centralizes plotting, the training timer, checkpoint saving, and Google Drive
+persistence so notebooks stay concise and consistent. Run-level metadata
+(seed, git SHA, hyperparams, GPU info) is owned by ``rl_doom.paths.write_config``
+and ``rl_doom.sb3_utils.gpu_info`` \u2014 this module does not duplicate it.
 """
 
 from __future__ import annotations
 
-import datetime
 import os
-import platform
 import shutil
 import time
 from pathlib import Path
@@ -63,42 +63,6 @@ def setup_google_drive(
 
     print(f"Google Drive mounted. Artifacts will persist at: {drive_root}")
     return drive_root
-
-
-# ---------------------------------------------------------------------------
-# Reproducibility metadata
-# ---------------------------------------------------------------------------
-
-def collect_metadata(
-    *,
-    seed: int | None = None,
-    config: dict | None = None,
-    wall_time: float | None = None,
-    fps: float | None = None,
-    total_steps: int | None = None,
-    extra: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Collect reproducibility metadata as a flat dict suitable for np.savez."""
-    meta: dict[str, Any] = {
-        "timestamp": str(datetime.datetime.now(datetime.timezone.utc)),
-        "python_version": platform.python_version(),
-        "platform_info": platform.platform(),
-        "torch_version": torch.__version__,
-        "device": str(torch.device("cuda" if torch.cuda.is_available() else "cpu")),
-    }
-    if seed is not None:
-        meta["seed"] = seed
-    if config is not None:
-        meta["config"] = str(config)
-    if wall_time is not None:
-        meta["wall_time_seconds"] = wall_time
-    if fps is not None:
-        meta["fps"] = fps
-    if total_steps is not None:
-        meta["total_env_steps"] = total_steps
-    if extra:
-        meta.update(extra)
-    return meta
 
 
 # ---------------------------------------------------------------------------

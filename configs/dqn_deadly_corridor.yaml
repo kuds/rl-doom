@@ -16,7 +16,7 @@ env:
   num_bots: 0                   # ZDoom AI bots via addbot (deathmatch-only)
 
 hyperparams:
-  lr: 5.0e-5
+  lr: 1.0e-4
   buffer_size: 200000
   learning_starts: 10000
   batch_size: 64
@@ -31,12 +31,12 @@ hyperparams:
   max_grad_norm: 10.0
 
 training:
-  total_timesteps: 500000
-  checkpoint_freq: 100000
+  total_timesteps: 2000000
+  checkpoint_freq: 250000
 
 eval:
-  eval_freq: 20000
-  n_episodes: 30
+  eval_freq: 25000
+  n_episodes: 10
 
 policy:
   features_dim: 512             # NatureCNN final FC width (SB3 default)
