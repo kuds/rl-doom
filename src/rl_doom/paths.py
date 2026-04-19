@@ -160,6 +160,7 @@ def write_config(
     seed: int,
     hyperparams: dict[str, Any],
     env_settings: dict[str, Any] | None = None,
+    policy_kwargs: dict[str, Any] | None = None,
     **extra: Any,
 ) -> None:
     """Write ``config.json`` at the root of a run directory.
@@ -168,6 +169,11 @@ def write_config(
     (``resize_shape``, ``frame_skip``, ``num_stack``, ``n_envs``,
     ``doom_skill``, ``num_bots``, …) so the exact wrapper stack used by a
     run is reproducible from ``config.json`` alone.
+
+    ``policy_kwargs`` captures the network architecture (``features_dim``,
+    ``net_arch``, any additional SB3 ``policy_kwargs`` overrides) so the
+    trained weights can be paired with the exact network definition that
+    produced them.
     """
     cfg = {
         "env": env,
@@ -177,6 +183,7 @@ def write_config(
         "git_sha": _git_sha(),
         "hyperparams": hyperparams,
         "env_settings": env_settings or {},
+        "policy_kwargs": policy_kwargs or {},
         "status": "running",
         **extra,
     }
