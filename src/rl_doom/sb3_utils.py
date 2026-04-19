@@ -38,7 +38,10 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import VecNormalize
 
-from rl_doom.env import make_sb3_env, make_wrapped_env
+# ``rl_doom.env`` imports ``vizdoom`` at module load time, but the ViZDoom
+# binary isn't always available where ``sb3_utils`` is needed (e.g. lean
+# test runners that only exercise the YAML -> policy_kwargs translation).
+# Defer that import to the two functions that actually build envs.
 from rl_doom.paths import mark_run_status, update_latest_symlink
 
 # Algorithms that use a Generalized Advantage Estimation rollout buffer and
@@ -456,6 +459,8 @@ def _record_video(
     """
     import imageio
 
+    from rl_doom.env import make_wrapped_env
+
     env = make_wrapped_env(scenario)
     # Walk down wrappers to grab raw RGB frames from DoomEnv.render().
     base_env = env
@@ -586,6 +591,8 @@ def train_sb3(
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # --- envs ---------------------------------------------------------
+    from rl_doom.env import make_sb3_env
+
     monitor_dir = metrics_dir / "monitor"
     vec_env = make_sb3_env(
         scenario,
