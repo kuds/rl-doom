@@ -378,8 +378,19 @@ def _record_video(
     *,
     fps: int = 20,
     max_steps: int = 5_000,
+    n_episodes: int = 1,
+    separator_frames: int = 10,
 ) -> Path | None:
-    """Record a single greedy episode from a trained SB3 model."""
+    """Record ``n_episodes`` greedy rollouts concatenated into one clip.
+
+    Short-horizon scenarios (basic, predict_position) can end in under a
+    second at eval time, producing a video that's too brief to watch. Set
+    ``n_episodes > 1`` to stitch multiple episodes back-to-back into a
+    single file. Between episodes we insert ``separator_frames`` black
+    frames so the cuts are visible.
+
+    ``max_steps`` is per-episode, not total.
+    """
     import imageio
 
     env = make_wrapped_env(scenario)
@@ -397,16 +408,24 @@ def _record_video(
         )
         return frame
 
-    obs, _ = env.reset()
-    frames: list[np.ndarray] = [_frame()]
-    done = False
-    step = 0
-    while not done and step < max_steps:
-        action, _ = model.predict(obs, deterministic=True)
-        obs, _, terminated, truncated, _ = env.step(int(action))
-        frames.append(_frame())
-        done = terminated or truncated
-        step += 1
+    frames: list[np.ndarray] = []
+    separator: np.ndarray | None = None
+    for ep in range(max(n_episodes, 1)):
+        obs, _ = env.reset()
+        first = _frame()
+        if ep > 0 and separator_frames > 0:
+            if separator is None:
+                separator = np.zeros_like(first)
+            frames.extend([separator] * separator_frames)
+        frames.append(first)
+        done = False
+        step = 0
+        while not done and step < max_steps:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, _, terminated, truncated, _ = env.step(int(action))
+            frames.append(_frame())
+            done = terminated or truncated
+            step += 1
     env.close()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -441,9 +460,12 @@ def train_sb3(
     checkpoint_freq: int = 50_000,
     record_video: bool = True,
     video_fps: int = 20,
+    video_episodes: int = 1,
     device: str | torch.device | None = None,
     verbose: int = 0,
     on_complete: Callable[[Path], None] | None = None,
+    doom_skill: int | None = None,
+    num_bots: int = 0,
 ) -> dict[str, Any]:
     """Train a single SB3 model end-to-end and write *all* artifacts now.
 
@@ -489,6 +511,8 @@ def train_sb3(
         n_envs=n_envs,
         seed=seed,
         monitor_dir=str(monitor_dir),
+        doom_skill=doom_skill,
+        num_bots=num_bots,
     )
     # Eval env is kept small (n_envs=1) and offset-seeded so eval rollouts
     # aren't duplicates of training rollouts.
@@ -497,6 +521,8 @@ def train_sb3(
         n_envs=1,
         seed=seed + 10_000,
         monitor_dir=None,
+        doom_skill=doom_skill,
+        num_bots=num_bots,
     )
 
     # Reward normalization for PPO: ViZDoom scenarios (especially
@@ -613,7 +639,11 @@ def train_sb3(
         else:
             video_model = model
         video_path = _record_video(
-            video_model, scenario, media_dir / out_name, fps=video_fps,
+            video_model,
+            scenario,
+            media_dir / out_name,
+            fps=video_fps,
+            n_episodes=video_episodes,
         )
 
     # Finalise config.json + latest pointer, then write the per-run summary.

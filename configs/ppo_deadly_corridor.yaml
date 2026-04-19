@@ -12,6 +12,8 @@ env:
   frame_skip: 4
   num_stack: 4
   n_envs: 8
+  doom_skill: 3                 # ViZDoom difficulty (1..5); 3 = "Hurt me plenty"
+  num_bots: 0                   # ZDoom AI bots via addbot (deathmatch-only)
 
 hyperparams:
   lr: 2.5e-4

@@ -159,9 +159,16 @@ def write_config(
     algo: str,
     seed: int,
     hyperparams: dict[str, Any],
+    env_settings: dict[str, Any] | None = None,
     **extra: Any,
 ) -> None:
-    """Write ``config.json`` at the root of a run directory."""
+    """Write ``config.json`` at the root of a run directory.
+
+    ``env_settings`` captures the ViZDoom environment configuration
+    (``resize_shape``, ``frame_skip``, ``num_stack``, ``n_envs``,
+    ``doom_skill``, ``num_bots``, …) so the exact wrapper stack used by a
+    run is reproducible from ``config.json`` alone.
+    """
     cfg = {
         "env": env,
         "algo": algo,
@@ -169,6 +176,7 @@ def write_config(
         "started_at": datetime.now(timezone.utc).isoformat(),
         "git_sha": _git_sha(),
         "hyperparams": hyperparams,
+        "env_settings": env_settings or {},
         "status": "running",
         **extra,
     }
