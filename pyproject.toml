@@ -37,6 +37,12 @@ dev = [
     "mypy",
     "pre-commit",
 ]
+dreamer = [
+    # DreamerV3 PyTorch port. Upstream is research code with no tagged
+    # releases; pin to a specific commit SHA on first install and record it
+    # here. See DREAMER_PLAN.md §5.1 / §8.
+    "dreamerv3-torch @ git+https://github.com/NM512/dreamerv3-torch@main",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

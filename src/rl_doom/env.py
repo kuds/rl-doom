@@ -300,20 +300,32 @@ class DoomEnv(gym.Env):
 
 
 class ResizeObservation(gym.ObservationWrapper):
-    """Resize frames to ``(H, W)`` grayscale.
+    """Resize frames to ``(H, W)``, optionally converting to grayscale.
 
-    The output observation is a 2-D ``uint8`` array of shape ``(H, W)``.
+    When ``grayscale=True`` (the default — matches the Atari-style pipeline
+    used by DQN/PPO/RecurrentPPO) the output is a 2-D ``uint8`` array of
+    shape ``(H, W)``.
+
+    When ``grayscale=False`` the output preserves the 3 RGB channels and
+    has shape ``(H, W, 3)``. Dreamer-style agents consume RGB directly.
     """
 
-    def __init__(self, env: gym.Env, shape: tuple[int, int] = (84, 84)) -> None:
+    def __init__(
+        self,
+        env: gym.Env,
+        shape: tuple[int, int] = (84, 84),
+        grayscale: bool = True,
+    ) -> None:
         super().__init__(env)
         self._shape = shape
+        self._grayscale = grayscale
+        out_shape: tuple[int, ...] = shape if grayscale else (*shape, 3)
         self.observation_space = gym.spaces.Box(
-            low=0, high=255, shape=shape, dtype=np.uint8,
+            low=0, high=255, shape=out_shape, dtype=np.uint8,
         )
 
     def observation(self, obs: np.ndarray) -> np.ndarray:
-        if obs.ndim == 3 and obs.shape[2] == 3:
+        if self._grayscale and obs.ndim == 3 and obs.shape[2] == 3:
             obs = cv2.cvtColor(obs, cv2.COLOR_RGB2GRAY)
         obs = cv2.resize(obs, (self._shape[1], self._shape[0]), interpolation=cv2.INTER_AREA)
         return obs
