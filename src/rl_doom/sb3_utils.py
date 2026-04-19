@@ -28,7 +28,6 @@ from typing import Any, Callable, cast
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from sb3_contrib import RecurrentPPO
 from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import (
@@ -106,11 +105,11 @@ def _build_model(
     algo_norm = algo.lower()
     pk = policy_kwargs or {}
     if algo_norm in {"ppo", "recurrent_ppo"}:
-        cls = RecurrentPPO if algo_norm == "recurrent_ppo" else PPO
-        policy = "CnnLstmPolicy" if algo_norm == "recurrent_ppo" else "CnnPolicy"
-        return cls(
-            policy,
-            vec_env,
+        # sb3-contrib is an optional dependency: import it only when the
+        # caller actually asks for recurrent_ppo so projects that just want
+        # PPO/DQN don't pay the install cost (and CI envs without
+        # sb3-contrib can still run the rest of the suite).
+        ppo_kwargs = dict(
             learning_rate=hyperparams["lr"],
             n_steps=hyperparams["n_steps"],
             batch_size=hyperparams["batch_size"],
@@ -127,6 +126,11 @@ def _build_model(
             verbose=verbose,
             policy_kwargs=pk,
         )
+        if algo_norm == "recurrent_ppo":
+            from sb3_contrib import RecurrentPPO
+
+            return RecurrentPPO("CnnLstmPolicy", vec_env, **ppo_kwargs)
+        return PPO("CnnPolicy", vec_env, **ppo_kwargs)
     if algo_norm == "dqn":
         return DQN(
             "CnnPolicy",
@@ -722,6 +726,8 @@ def train_sb3(
         if best_ckpt.exists():
             algo_norm = algo.lower()
             if algo_norm == "recurrent_ppo":
+                from sb3_contrib import RecurrentPPO
+
                 cls: type[BaseAlgorithm] = RecurrentPPO
             elif algo_norm == "ppo":
                 cls = PPO
