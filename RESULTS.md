@@ -11,11 +11,13 @@ skill 3 for Deadly Corridor? Populated as matrix runs land.
 - **Seeds per cell:** 3 (`42`, `123`, `777`)
 - **Total cells:** 6 variants × 3 seeds = 18 runs
 - **Budget:** each variant uses its own YAML's `training.total_timesteps`
-  (PPO/RPPO 2 M, DQN 1 M — see `configs/*deadly_corridor*.yaml`)
-- **Curriculum stages (PPO / RPPO):**
-  `skill 1 → 2 @ eval≥40`, `skill 2 → 3 @ eval≥60`, `skill 3 terminal`
-- **Curriculum stages (DQN):** looser gates (`30` / `50`) because DQN
-  eval variance is higher without VecNormalize reward scaling.
+  (3 M for every variant — see `configs/*deadly_corridor*.yaml`)
+- **Curriculum stages (all algorithms):**
+  `skill 1 → 2 @ eval≥1500`, `skill 2 → 3 @ eval≥1500`, `skill 3 terminal`.
+  Thresholds are on the raw eval-reward scale (`EvalCallback` reports
+  unscaled rewards for PPO/RPPO as well). See
+  [`BENCHMARKS.md`](BENCHMARKS.md) for the per-skill reference scores
+  used to pick 1500.
 
 Kick the full matrix off with:
 

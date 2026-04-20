@@ -13,6 +13,10 @@ Every scenario below has a matching config for both algorithms in `configs/<algo
 | **Defend the Center** | Stationary 360° defense against waves | 200k |
 | **Deathmatch** | Full free-for-all map: navigate, aim, and fight | 1M–2M |
 
+See [`BENCHMARKS.md`](BENCHMARKS.md) for per-scenario episode timeouts,
+reward structures, and "good agent" reference scores pulled from the
+ViZDoom literature.
+
 ## Project Structure
 
 ```
@@ -114,10 +118,14 @@ curriculum:
   min_evals_between_promotions: 2
   sync_eval_env: true
   stages:
-    - {skill: 1, promote_at: 40.0}   # start easy
-    - {skill: 2, promote_at: 60.0}
-    - {skill: 3, promote_at: null}   # terminal
+    - {skill: 1, promote_at: 1500.0}   # start easy
+    - {skill: 2, promote_at: 1500.0}
+    - {skill: 3, promote_at: null}     # terminal
 ```
+
+Thresholds are on the raw eval-reward scale (`EvalCallback` does not
+apply VecNormalize rescaling). See [`BENCHMARKS.md`](BENCHMARKS.md) for
+per-skill reference scores used to calibrate them.
 
 Paired "baseline vs. curriculum" YAMLs live under `configs/`:
 
