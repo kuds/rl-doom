@@ -73,6 +73,16 @@ def _load_termination_report(run_dir: Path) -> dict[str, Any]:
     return {}
 
 
+def _load_curriculum_report(run_dir: Path) -> dict[str, Any]:
+    path = run_dir / "metrics" / "curriculum.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (ValueError, OSError):
+            return {}
+    return {}
+
+
 def _best_eval(eval_arr: np.ndarray) -> tuple | None:
     if eval_arr.ndim != 2 or eval_arr.shape[0] == 0:
         return None
@@ -86,6 +96,7 @@ def generate_run_summary(run_dir: Path) -> str:
     cfg = _load_config(run_dir)
     metrics = _load_metrics(run_dir)
     terminations = _load_termination_report(run_dir)
+    curriculum = _load_curriculum_report(run_dir)
 
     env_name = cfg.get("env", run_dir.parents[1].name)
     algo_name = cfg.get("algo", run_dir.parents[0].name)
@@ -241,6 +252,53 @@ def generate_run_summary(run_dir: Path) -> str:
             lines.append(
                 f"  {reason:14s} {count:>6}  ({frac * 100:5.1f}%)",
             )
+
+    if curriculum:
+        stages = curriculum.get("stages") or []
+        promotions = curriculum.get("promotions") or []
+        final_skill = curriculum.get("final_skill")
+        final_num_bots = curriculum.get("final_num_bots")
+        final_stage_index = curriculum.get("final_stage_index")
+        # Only render the section when the callback actually ran, i.e.
+        # at least one of the knobs ended with a non-None value.
+        if final_skill is not None or final_num_bots is not None:
+            lines += ["", "Curriculum", "-" * 40]
+            stage_str = (
+                f" (stage {int(final_stage_index) + 1} / {len(stages)})"
+                if final_stage_index is not None and stages
+                else ""
+            )
+            if final_skill is not None:
+                lines.append(f"  Final skill:    {final_skill}{stage_str}")
+            if final_num_bots is not None:
+                # If we already printed the stage position on the skill line,
+                # omit it here to avoid duplicating.
+                suffix = "" if final_skill is not None else stage_str
+                lines.append(f"  Final num_bots: {final_num_bots}{suffix}")
+            # Promotion timeline: each entry is
+            # {step, skill, num_bots, trigger, eval_mean_reward}. The first
+            # entry is always the initial stage; skip it so we only list the
+            # actual promotions.
+            promoted = [p for p in promotions if p.get("trigger") == "promotion"]
+            if promoted:
+                lines.append(f"  Promotions:     {len(promoted)}")
+                for p in promoted:
+                    step = _fmt_number(p.get("step", 0))
+                    mean_r = p.get("eval_mean_reward")
+                    mean_str = (
+                        f"{mean_r:.2f}" if isinstance(mean_r, (int, float)) else "N/A"
+                    )
+                    # Show whichever knob(s) the stage carries. The promotion
+                    # entry records both fields; ``None`` means "not used".
+                    parts: list[str] = []
+                    if p.get("skill") is not None:
+                        parts.append(f"skill {p['skill']}")
+                    if p.get("num_bots") is not None:
+                        parts.append(f"num_bots {p['num_bots']}")
+                    knob_str = " + ".join(parts) if parts else "?"
+                    lines.append(
+                        f"    step {step:>12s} -> {knob_str}  (eval_mean={mean_str})",
+                    )
 
     lines.append("")
     return "\n".join(lines)

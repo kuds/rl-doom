@@ -33,7 +33,7 @@ hyperparams:
   max_grad_norm: 0.5
 
 training:
-  total_timesteps: 2000000
+  total_timesteps: 3000000
   checkpoint_freq: 250000
 
 eval:
@@ -46,12 +46,11 @@ policy:
 
 # Skill curriculum.
 #
-# ``promote_at`` thresholds are intentionally *under* the published
-# expert-policy reward for each skill (Deadly Corridor's reward is
-# ~2200 for a completed run on skill 3, scaled lower for lower skills
-# because VecNormalize rescales returns). The thresholds here reflect
-# the point at which the policy is *consistently* surviving past the
-# first imp pair — enough prior for the next difficulty to be tractable.
+# ``promote_at`` is the raw eval mean reward (EvalCallback does not
+# apply VecNormalize rescaling). The skill-3 baseline hits ~1700–2300
+# eval on this scenario when the policy actually completes the corridor,
+# so 1500 is the "consistently reaches the vest" bar for the current
+# stage before stepping up the difficulty.
 #
 # min_evals_between_promotions=2 prevents a single lucky eval from
 # jumping a stage; the curriculum waits for at least two eval windows
@@ -61,6 +60,6 @@ curriculum:
   min_evals_between_promotions: 2
   sync_eval_env: true
   stages:
-    - {skill: 1, promote_at: 40.0}
-    - {skill: 2, promote_at: 60.0}
+    - {skill: 1, promote_at: 1500.0}
+    - {skill: 2, promote_at: 1500.0}
     - {skill: 3, promote_at: null}   # terminal stage

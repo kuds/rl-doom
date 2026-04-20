@@ -1,32 +1,45 @@
-"""Skill-based curriculum learning for ViZDoom scenarios.
+"""Curriculum learning for ViZDoom scenarios.
 
 Provides :class:`SkillCurriculumCallback`, a Stable-Baselines3 callback that
 monitors an :class:`~stable_baselines3.common.callbacks.EvalCallback` and
-promotes the training envs' ViZDoom ``doom_skill`` each time the eval mean
-reward clears a per-stage threshold.
+promotes one or both of two difficulty knobs whenever the eval mean reward
+clears a per-stage threshold:
 
-Why this helps Deadly Corridor (the headline use case):
+* ``doom_skill`` — ViZDoom's 1..5 monster-AI aggressiveness setting.
+  Used by scenarios where enemies are pre-placed monsters
+  (deadly_corridor, defend_the_center).
+* ``num_bots`` — count of ZDoom AI bots spawned via ``addbot`` at each
+  ``reset()``. Used by deathmatch-style maps where there are no
+  pre-placed monsters and opponents are player-style bots.
 
-* The scenario's reward is dominated by the death penalty; on skill 3 the
-  imps kill the agent before it can discover the "push forward + shoot"
-  gradient.
-* Starting on skill 1 lets the agent survive long enough to learn the
-  distance-to-vest shaping, then ramping the difficulty back up fine-tunes
-  combat without losing the navigation prior.
+Why this helps — two headline use cases:
+
+* **Deadly Corridor** (skill curriculum). The reward is dominated by
+  the death penalty; on skill 3 the imps kill the agent before it can
+  discover the "push forward + shoot" gradient. Starting on skill 1
+  lets the agent survive long enough to learn the distance-to-vest
+  shaping, then ramping the difficulty back up fine-tunes combat
+  without losing the navigation prior.
+* **Deathmatch** (bot-count curriculum). An 8-bot free-for-all with
+  no reward shaping is extremely sparse for a fresh policy. Starting
+  with 2 bots gives the agent frequent combat encounters, then
+  scaling up to 4 and 8 grows the difficulty as the policy hardens.
 
 Design notes:
 
-* Uses ``DoomGame.set_doom_skill`` which takes effect on the *next*
-  ``new_episode()`` — no forced reset required, the active episode finishes
-  at the old difficulty.
+* ``DoomGame.set_doom_skill`` takes effect on the next
+  ``new_episode()`` — no forced reset required, the active episode
+  finishes at the old difficulty.
+* ``num_bots`` changes take effect on the next ``reset()`` because
+  :class:`rl_doom.env.DoomEnv` re-issues ``addbot`` commands after
+  each ``new_episode``; the active episode keeps its original count.
 * Relies on the public ``EvalCallback`` attributes
-  ``evaluations_timesteps`` and ``last_mean_reward``, so the callback must
-  be registered **after** the ``EvalCallback`` in the callback list (SB3
-  fires callbacks in registration order, and we need the eval result from
-  the current step to be available before we inspect it).
-* Propagates skill changes to both the training vec env and the eval vec
-  env (via the attached ``EvalCallback``) so the promotion threshold is
-  measured on the same difficulty the agent is training on.
+  ``evaluations_timesteps`` and ``last_mean_reward``, so the callback
+  must be registered **after** the ``EvalCallback`` in the callback
+  list (SB3 fires callbacks in registration order).
+* Propagates changes to both the training vec env and the eval vec
+  env (via the attached ``EvalCallback``) so the promotion threshold
+  is measured on the same difficulty the agent is training on.
 """
 
 from __future__ import annotations
@@ -39,38 +52,64 @@ from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
 @dataclass(frozen=True)
 class CurriculumStage:
-    """One rung of a skill curriculum.
+    """One rung of a curriculum.
 
-    ``promote_at`` is the eval-reward threshold that triggers promotion to
-    the *next* stage. ``None`` marks a terminal stage — once the curriculum
-    reaches it, no further promotions occur even if the threshold would be
-    exceeded.
+    A stage applies one or both of two difficulty knobs when it becomes
+    active:
+
+    * ``skill`` — ViZDoom's ``doom_skill`` (1..5), controls monster AI
+      aggressiveness. Used by deadly_corridor / defend_the_center.
+    * ``num_bots`` — count of ZDoom AI bots spawned via ``addbot`` at
+      each ``reset()``. Used by deathmatch-style maps where the enemies
+      are player-style bots, not scenario monsters.
+
+    At least one of the two must be set. ``promote_at`` is the
+    eval-reward threshold that triggers promotion to the *next* stage;
+    ``None`` marks a terminal stage.
     """
 
-    skill: int
-    promote_at: float | None
+    skill: int | None = None
+    num_bots: int | None = None
+    promote_at: float | None = None
 
     def __post_init__(self) -> None:
-        if not 1 <= self.skill <= 5:
+        if self.skill is None and self.num_bots is None:
+            raise ValueError(
+                "CurriculumStage must set at least one of 'skill' or 'num_bots'",
+            )
+        if self.skill is not None and not 1 <= self.skill <= 5:
             raise ValueError(
                 f"CurriculumStage.skill must be in [1, 5], got {self.skill!r}",
+            )
+        if self.num_bots is not None and self.num_bots < 0:
+            raise ValueError(
+                f"CurriculumStage.num_bots must be >= 0, got {self.num_bots!r}",
             )
 
 
 def parse_curriculum_config(cfg: dict[str, Any] | None) -> list[CurriculumStage] | None:
     """Translate a YAML ``curriculum:`` block into :class:`CurriculumStage` rungs.
 
-    Expected shape::
+    Expected shapes (pick one or mix within a single curriculum)::
 
+        # Skill curriculum (deadly_corridor):
         curriculum:
           stages:
             - {skill: 1, promote_at: 50.0}
             - {skill: 2, promote_at: 80.0}
-            - {skill: 3, promote_at: null}   # terminal
+            - {skill: 3, promote_at: null}
 
-    Returns ``None`` when the block is absent or explicitly disabled
-    (``enabled: false``), so callers can use truthiness to decide whether
-    to attach the callback.
+        # Bot-count curriculum (deathmatch):
+        curriculum:
+          stages:
+            - {num_bots: 2, promote_at: 3.0}
+            - {num_bots: 4, promote_at: 5.0}
+            - {num_bots: 8, promote_at: null}
+
+    Stages may also set both fields at once if the scenario benefits
+    from ramping both knobs together. Returns ``None`` when the block
+    is absent or explicitly disabled (``enabled: false``) so callers
+    can use truthiness to decide whether to attach the callback.
     """
     if not cfg:
         return None
@@ -83,14 +122,15 @@ def parse_curriculum_config(cfg: dict[str, Any] | None) -> list[CurriculumStage]
         )
     stages: list[CurriculumStage] = []
     for i, item in enumerate(raw_stages):
-        if "skill" not in item:
+        if "skill" not in item and "num_bots" not in item:
             raise ValueError(
-                f"curriculum.stages[{i}] missing required 'skill' field",
+                f"curriculum.stages[{i}] must set 'skill' and/or 'num_bots'",
             )
         promote_at = item.get("promote_at")
         stages.append(
             CurriculumStage(
-                skill=int(item["skill"]),
+                skill=int(item["skill"]) if "skill" in item else None,
+                num_bots=int(item["num_bots"]) if "num_bots" in item else None,
                 promote_at=None if promote_at is None else float(promote_at),
             ),
         )
@@ -158,8 +198,16 @@ class SkillCurriculumCallback(BaseCallback):
     # ------------------------------------------------------------------
 
     @property
-    def current_skill(self) -> int:
-        return self._stages[self._idx].skill
+    def current_stage(self) -> CurriculumStage:
+        return self._stages[self._idx]
+
+    @property
+    def current_skill(self) -> int | None:
+        return self.current_stage.skill
+
+    @property
+    def current_num_bots(self) -> int | None:
+        return self.current_stage.num_bots
 
     @property
     def current_stage_index(self) -> int:
@@ -174,20 +222,13 @@ class SkillCurriculumCallback(BaseCallback):
     # ------------------------------------------------------------------
 
     def _on_training_start(self) -> None:
-        # Always seed the eval env with the initial skill even when
+        # Always seed the eval env with the initial stage even when
         # ``sync_eval_env=False``; that flag only gates future promotions.
-        self._apply_skill(self.current_skill, sync_eval=True)
-        self.promotions.append(
-            {
-                "step": int(self.num_timesteps),
-                "skill": self.current_skill,
-                "trigger": "initial",
-                "eval_mean_reward": None,
-            },
-        )
+        self._apply_stage(self.current_stage, sync_eval=True)
+        self.promotions.append(self._promotion_entry(trigger="initial", mean_r=None))
         if self.verbose:
             print(
-                f"[curriculum] start skill={self.current_skill} "
+                f"[curriculum] start {self._describe_stage(self.current_stage)} "
                 f"(stage 1 / {len(self._stages)})",
             )
 
@@ -201,8 +242,7 @@ class SkillCurriculumCallback(BaseCallback):
         # A fresh eval result is available.
         self._last_seen_eval_ts = latest_ts
         self._evals_since_promotion += 1
-        self.logger.record("curriculum/skill", self.current_skill)
-        self.logger.record("curriculum/stage_index", self._idx)
+        self._log_current_stage()
 
         if self.is_terminal:
             return True
@@ -211,26 +251,20 @@ class SkillCurriculumCallback(BaseCallback):
         mean_r = float(self._eval_cb.last_mean_reward)
         if mean_r >= threshold and self._evals_since_promotion >= self._min_gap:
             self._idx += 1
-            new_skill = self.current_skill
-            self._apply_skill(new_skill)
+            new_stage = self.current_stage
+            self._apply_stage(new_stage)
             self._evals_since_promotion = 0
             self.promotions.append(
-                {
-                    "step": int(self.num_timesteps),
-                    "skill": new_skill,
-                    "trigger": "promotion",
-                    "eval_mean_reward": mean_r,
-                },
+                self._promotion_entry(trigger="promotion", mean_r=mean_r),
             )
             if self.verbose:
                 print(
                     f"[curriculum] step={self.num_timesteps} "
                     f"eval_mean={mean_r:.2f} >= {threshold:.2f} "
-                    f"-> promote to skill {new_skill} "
+                    f"-> promote to {self._describe_stage(new_stage)} "
                     f"(stage {self._idx + 1} / {len(self._stages)})",
                 )
-            self.logger.record("curriculum/skill", new_skill)
-            self.logger.record("curriculum/stage_index", self._idx)
+            self._log_current_stage()
             self.logger.record("curriculum/promotion_step", self.num_timesteps)
         return True
 
@@ -238,19 +272,54 @@ class SkillCurriculumCallback(BaseCallback):
     # Env-walking helpers
     # ------------------------------------------------------------------
 
-    def _apply_skill(self, skill: int, *, sync_eval: bool | None = None) -> None:
-        """Set ``doom_skill`` on every underlying DoomEnv (train + eval).
+    def _apply_stage(
+        self, stage: CurriculumStage, *, sync_eval: bool | None = None,
+    ) -> None:
+        """Apply the stage's knobs (``skill`` and/or ``num_bots``) to all envs.
 
         ``sync_eval`` overrides ``self._sync_eval_env`` for this call — the
         initial application at ``_on_training_start`` always propagates to
         the eval env regardless of the instance flag.
         """
-        _set_skill_on_vec_env(self.training_env, skill)
         propagate = self._sync_eval_env if sync_eval is None else sync_eval
-        if propagate:
-            eval_env = getattr(self._eval_cb, "eval_env", None)
+        eval_env = getattr(self._eval_cb, "eval_env", None) if propagate else None
+        if stage.skill is not None:
+            _set_skill_on_vec_env(self.training_env, stage.skill)
             if eval_env is not None:
-                _set_skill_on_vec_env(eval_env, skill)
+                _set_skill_on_vec_env(eval_env, stage.skill)
+        if stage.num_bots is not None:
+            _set_num_bots_on_vec_env(self.training_env, stage.num_bots)
+            if eval_env is not None:
+                _set_num_bots_on_vec_env(eval_env, stage.num_bots)
+
+    def _promotion_entry(
+        self, *, trigger: str, mean_r: float | None,
+    ) -> dict[str, Any]:
+        stage = self.current_stage
+        return {
+            "step": int(self.num_timesteps),
+            "skill": stage.skill,
+            "num_bots": stage.num_bots,
+            "trigger": trigger,
+            "eval_mean_reward": mean_r,
+        }
+
+    def _log_current_stage(self) -> None:
+        stage = self.current_stage
+        if stage.skill is not None:
+            self.logger.record("curriculum/skill", stage.skill)
+        if stage.num_bots is not None:
+            self.logger.record("curriculum/num_bots", stage.num_bots)
+        self.logger.record("curriculum/stage_index", self._idx)
+
+    @staticmethod
+    def _describe_stage(stage: CurriculumStage) -> str:
+        parts: list[str] = []
+        if stage.skill is not None:
+            parts.append(f"skill={stage.skill}")
+        if stage.num_bots is not None:
+            parts.append(f"num_bots={stage.num_bots}")
+        return " ".join(parts) or "<empty stage>"
 
 
 def _iter_inner_envs(vec_env: Any) -> Iterable[Any]:
@@ -296,3 +365,20 @@ def _set_skill_on_vec_env(vec_env: Any, skill: int) -> None:
         # Mirror the stored skill so DoomEnv.__repr__/introspection sees it.
         if hasattr(base, "_doom_skill"):
             base._doom_skill = skill
+
+
+def _set_num_bots_on_vec_env(vec_env: Any, num_bots: int) -> None:
+    """Update each worker env's ``_num_bots`` so the next ``reset()`` spawns
+    that many ZDoom AI bots.
+
+    Unlike ``doom_skill`` (which DoomGame applies immediately), bot count
+    only takes effect on the *next* episode because ``DoomEnv.reset``
+    re-issues ``addbot`` commands after ``new_episode``. The active
+    episode keeps the previous bot count.
+    """
+    for env in _iter_inner_envs(vec_env):
+        base = env
+        while hasattr(base, "env") and not hasattr(base, "_num_bots"):
+            base = base.env
+        if hasattr(base, "_num_bots"):
+            base._num_bots = int(num_bots)

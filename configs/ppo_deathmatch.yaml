@@ -14,7 +14,10 @@ env:
   num_stack: 4
   n_envs: 8
   doom_skill: 3                 # ViZDoom difficulty (1..5); 3 = "Hurt me plenty"
-  num_bots: 0                   # ZDoom AI bots via addbot (deathmatch-only)
+  num_bots: 4                   # ZDoom AI bots via addbot (deathmatch-only).
+                                # 4 bots gives a dense-enough reward signal
+                                # without overwhelming a fresh policy; the
+                                # curriculum variant ramps 2 -> 4 -> 8.
 
 hyperparams:
   lr: 2.5e-4
@@ -29,7 +32,7 @@ hyperparams:
   max_grad_norm: 0.5
 
 training:
-  total_timesteps: 2000000
+  total_timesteps: 3000000
   checkpoint_freq: 250000
 
 eval:

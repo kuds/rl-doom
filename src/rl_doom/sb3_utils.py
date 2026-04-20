@@ -450,17 +450,17 @@ def _record_video(
     fps: int = 20,
     max_steps: int = 5_000,
     n_episodes: int = 1,
-    separator_frames: int = 10,
-) -> Path | None:
-    """Record ``n_episodes`` greedy rollouts concatenated into one clip.
+) -> list[Path]:
+    """Record ``n_episodes`` greedy rollouts as separate video files.
 
-    Short-horizon scenarios (basic, predict_position) can end in under a
-    second at eval time, producing a video that's too brief to watch. Set
-    ``n_episodes > 1`` to stitch multiple episodes back-to-back into a
-    single file. Between episodes we insert ``separator_frames`` black
-    frames so the cuts are visible.
+    For each of the ``n_episodes`` rollouts we write a standalone video
+    file named ``<stem>_ep<N>.mp4`` next to ``out_path``; e.g.
+    ``media/ppo_deadly_corridor_ep1.mp4``. A single ``_episodes.json``
+    sidecar lists the per-episode reward, length (steps), and
+    termination reason in playback order.
 
-    ``max_steps`` is per-episode, not total.
+    ``max_steps`` is per-episode, not total. Returns the list of video
+    paths actually written (empty if encoding failed for every episode).
     """
     import imageio
 
@@ -481,23 +481,38 @@ def _record_video(
         )
         return frame
 
+    def _write_clip(frames: list[np.ndarray], path: Path) -> Path:
+        imgs = cast(Any, frames)
+        try:
+            imageio.mimsave(path, imgs, fps=fps)
+            return path
+        except Exception as exc:  # noqa: BLE001
+            fallback = path.with_suffix(".gif")
+            imageio.mimsave(fallback, imgs, fps=fps, loop=0)
+            print(
+                f"[video] mp4 encode failed ({exc}); wrote GIF fallback: {fallback}"
+            )
+            return fallback
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
     # Recurrent policies (RecurrentPPO) thread an LSTM hidden state across
     # ``predict`` calls and need an ``episode_start`` flag so they can zero
     # out the state at episode boundaries. SB3's ``predict`` API accepts these
     # arguments on every policy — they're just no-ops for non-recurrent ones —
     # so we always pass them and keep one code path.
-    frames: list[np.ndarray] = []
-    separator: np.ndarray | None = None
+    episode_stats: list[dict[str, Any]] = []
+    video_paths: list[Path] = []
     for ep in range(max(n_episodes, 1)):
+        frames: list[np.ndarray] = []
         obs, _ = env.reset()
-        first = _frame()
-        if ep > 0 and separator_frames > 0:
-            if separator is None:
-                separator = np.zeros_like(first)
-            frames.extend([separator] * separator_frames)
-        frames.append(first)
+        frames.append(_frame())
         done = False
         step = 0
+        total_reward = 0.0
+        last_info: dict[str, Any] = {}
+        terminated = False
+        truncated = False
         lstm_states: Any = None
         episode_start = np.array([True])
         while not done and step < max_steps:
@@ -507,24 +522,40 @@ def _record_video(
                 episode_start=episode_start,
                 deterministic=True,
             )
-            obs, _, terminated, truncated, _ = env.step(int(action))
+            obs, reward, terminated, truncated, last_info = env.step(int(action))
+            total_reward += float(reward)
             frames.append(_frame())
             done = terminated or truncated
             episode_start = np.array([False])
             step += 1
+        if terminated:
+            termination = str(last_info.get("termination_reason", "unknown"))
+        elif truncated or step >= max_steps:
+            termination = "truncated"
+        else:
+            termination = "unknown"
+        clip_path = out_path.with_name(f"{out_path.stem}_ep{ep + 1}{out_path.suffix}")
+        written = _write_clip(frames, clip_path)
+        video_paths.append(written)
+        episode_stats.append(
+            {
+                "episode": ep + 1,
+                "video": written.name,
+                "reward": round(total_reward, 4),
+                "length_steps": step,
+                "termination": termination,
+            },
+        )
     env.close()
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    # imageio.mimsave's stub varies across versions; cast sidesteps variance.
-    imgs = cast(Any, frames)
-    try:
-        imageio.mimsave(out_path, imgs, fps=fps)
-        return out_path
-    except Exception as exc:  # noqa: BLE001
-        fallback = out_path.with_suffix(".gif")
-        imageio.mimsave(fallback, imgs, fps=fps, loop=0)
-        print(f"[video] mp4 encode failed ({exc}); wrote GIF fallback: {fallback}")
-        return fallback
+    # Single JSON summary describing every per-episode clip. Kept alongside
+    # the videos so downstream tooling can map clip -> reward/termination
+    # without re-running the model.
+    stats_path = out_path.with_name(out_path.stem + "_episodes.json")
+    stats_path.write_text(
+        json.dumps({"fps": fps, "episodes": episode_stats}, indent=4) + "\n",
+    )
+    return video_paths
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +577,7 @@ def train_sb3(
     checkpoint_freq: int = 50_000,
     record_video: bool = True,
     video_fps: int = 20,
-    video_episodes: int = 1,
+    video_episodes: int = 5,
     device: str | torch.device | None = None,
     verbose: int = 0,
     on_complete: Callable[[Path], None] | None = None,
@@ -565,7 +596,8 @@ def train_sb3(
     * ``checkpoints/final.zip`` + ``checkpoints/best/`` (if eval ran)
     * ``metrics/progress.csv`` + ``metrics/training.npz`` + ``metrics/evaluations.npz``
     * ``figures/learning_curves.png`` + ``figures/eval_performance.png``
-    * ``media/<algo>_<scenario>.mp4`` (or ``.gif`` fallback)
+    * ``media/<algo>_<scenario>_ep<N>.mp4`` (one per playthrough, with
+      ``.gif`` fallback) plus ``media/<algo>_<scenario>_episodes.json``
     * ``tensorboard/`` event files
     * ``stage_summary.txt`` (via ``scripts.generate_summary``)
     * ``config.json`` with ``status=completed``, wall-time, FPS, GPU info
@@ -756,12 +788,17 @@ def train_sb3(
             json.dumps(
                 {
                     "stages": [
-                        {"skill": s.skill, "promote_at": s.promote_at}
+                        {
+                            "skill": s.skill,
+                            "num_bots": s.num_bots,
+                            "promote_at": s.promote_at,
+                        }
                         for s in curriculum_stages or []
                     ],
                     "promotions": curriculum_cb.promotions,
                     "final_stage_index": curriculum_cb.current_stage_index,
                     "final_skill": curriculum_cb.current_skill,
+                    "final_num_bots": curriculum_cb.current_num_bots,
                 },
                 indent=2,
             ),
@@ -785,7 +822,7 @@ def train_sb3(
         algo, scenario, progress, episodes, evaluations, out_path=learning_curves_path,
     )
 
-    video_path: Path | None = None
+    video_paths: list[Path] = []
     if record_video:
         out_name = f"{algo.lower()}_{scenario}.mp4"
         # Record the gameplay clip from the best eval checkpoint when
@@ -805,7 +842,7 @@ def train_sb3(
             video_model: BaseAlgorithm = cls.load(str(best_ckpt), device=device)
         else:
             video_model = model
-        video_path = _record_video(
+        video_paths = _record_video(
             video_model,
             scenario,
             media_dir / out_name,
@@ -843,10 +880,13 @@ def train_sb3(
         "mean_eval_reward": final_eval_mean,
         "best_eval_reward": best_eval_mean,
         "success_rate": success_rate,
-        "video_path": video_path,
+        "video_paths": video_paths,
         "learning_curves_path": learning_curves_path,
         "curriculum_final_skill": (
             curriculum_cb.current_skill if curriculum_cb else None
+        ),
+        "curriculum_final_num_bots": (
+            curriculum_cb.current_num_bots if curriculum_cb else None
         ),
         "curriculum_promotions": (
             curriculum_cb.promotions if curriculum_cb else None
