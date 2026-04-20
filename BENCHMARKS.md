@@ -101,6 +101,12 @@ stock Doom tic rate of 35 tics/s, so **1 env-step = 4 tics ≈ 0.114 s**.
   2M env-steps against 8 bots. Strong published agents train for
   10–50M frames with reward shaping (kill bonus, health/ammo pickups
   as extrinsic signals) to escape the sparse-reward regime.
+- **Curriculum calibration** (used by
+  `configs/*_deathmatch_curriculum.yaml`): 2 bots → 4 bots at eval ≥ 3
+  frags, 4 → 8 at eval ≥ 5 frags. Both thresholds sit inside the
+  "learning something / decent" band — the intent is to ramp as soon
+  as the policy is reliably scoring on the current rung, not wait
+  until it's mastered.
 
 ## Sources
 

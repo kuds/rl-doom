@@ -788,12 +788,17 @@ def train_sb3(
             json.dumps(
                 {
                     "stages": [
-                        {"skill": s.skill, "promote_at": s.promote_at}
+                        {
+                            "skill": s.skill,
+                            "num_bots": s.num_bots,
+                            "promote_at": s.promote_at,
+                        }
                         for s in curriculum_stages or []
                     ],
                     "promotions": curriculum_cb.promotions,
                     "final_stage_index": curriculum_cb.current_stage_index,
                     "final_skill": curriculum_cb.current_skill,
+                    "final_num_bots": curriculum_cb.current_num_bots,
                 },
                 indent=2,
             ),
@@ -879,6 +884,9 @@ def train_sb3(
         "learning_curves_path": learning_curves_path,
         "curriculum_final_skill": (
             curriculum_cb.current_skill if curriculum_cb else None
+        ),
+        "curriculum_final_num_bots": (
+            curriculum_cb.current_num_bots if curriculum_cb else None
         ),
         "curriculum_promotions": (
             curriculum_cb.promotions if curriculum_cb else None

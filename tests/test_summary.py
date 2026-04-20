@@ -79,27 +79,36 @@ def test_summary_renders_curriculum_final_skill_and_promotions(
     """The curriculum section must surface final skill + each promotion."""
     curriculum = {
         "stages": [
-            {"skill": 1, "promote_at": 1500.0},
-            {"skill": 2, "promote_at": 1500.0},
-            {"skill": 3, "promote_at": None},
+            {"skill": 1, "num_bots": None, "promote_at": 1500.0},
+            {"skill": 2, "num_bots": None, "promote_at": 1500.0},
+            {"skill": 3, "num_bots": None, "promote_at": None},
         ],
         "promotions": [
-            {"step": 0, "skill": 1, "trigger": "initial", "eval_mean_reward": None},
+            {
+                "step": 0,
+                "skill": 1,
+                "num_bots": None,
+                "trigger": "initial",
+                "eval_mean_reward": None,
+            },
             {
                 "step": 500_000,
                 "skill": 2,
+                "num_bots": None,
                 "trigger": "promotion",
                 "eval_mean_reward": 1523.4,
             },
             {
                 "step": 1_250_000,
                 "skill": 3,
+                "num_bots": None,
                 "trigger": "promotion",
                 "eval_mean_reward": 1612.9,
             },
         ],
         "final_stage_index": 2,
         "final_skill": 3,
+        "final_num_bots": None,
     }
     out = generate_run_summary(_minimal_run_dir(tmp_path, curriculum=curriculum))
     assert "Curriculum" in out
@@ -107,10 +116,12 @@ def test_summary_renders_curriculum_final_skill_and_promotions(
     assert "Final skill:" in out
     assert "3" in out
     assert "stage 3 / 3" in out
-    # Promotion table lists both non-initial promotions with step + skill +
+    # Promotion table lists both non-initial promotions with step + knob +
     # eval mean. Step number is comma-formatted by ``_fmt_number``.
     assert "500,000" in out
     assert "1,250,000" in out
+    assert "-> skill 2" in out
+    assert "-> skill 3" in out
     assert "1523.40" in out
     assert "1612.90" in out
     # The "initial" rung is not counted as a promotion.

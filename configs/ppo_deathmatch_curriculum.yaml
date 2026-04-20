@@ -1,0 +1,84 @@
+# PPO on Deathmatch with a 3-stage bot-count curriculum (2 -> 4 -> 8).
+#
+# Pair with ``configs/ppo_deathmatch.yaml`` (the fixed 4-bot baseline)
+# so each notebook run produces a "curriculum" and a "baseline"
+# directory side-by-side under
+# ``training_jobs/deathmatch/ppo/runs/``. Identical hyperparameters
+# keep the comparison apples-to-apples; the only difference is the
+# ``curriculum:`` block at the bottom of this file.
+#
+# Why a bot-count curriculum on this scenario?
+#
+# * The deathmatch.wad map has no pre-placed monsters — enemies are
+#   ZDoom AI bots added via ``addbot`` on every reset, one per
+#   ``num_bots``. At ``num_bots: 0`` the reward signal (KILLCOUNT
+#   delta) is identically zero for the entire 2-minute episode.
+# * An 8-bot free-for-all is also too sparse for a fresh policy: the
+#   agent dies fast against bots with pre-programmed aiming, rarely
+#   landing a kill. Starting with 2 bots gives the agent frequent
+#   encounters at a tractable difficulty.
+# * Once the policy is reliably fragging 2-bot matches, bumping to 4
+#   and 8 forces it to generalise (target prioritisation, cover use,
+#   weapon switching) without the initial learning cliff.
+
+scenario: deathmatch
+algorithm: ppo
+seed: 42
+
+env:
+  resize_shape: [84, 84]
+  frame_skip: 4
+  num_stack: 4
+  n_envs: 8
+  doom_skill: 3                 # monster-AI setting; bots don't use it,
+                                # but it's recorded in config.json for
+                                # comparability with the skill curriculum.
+  # num_bots is deliberately unset: the curriculum's first stage
+  # (num_bots=2) is applied at training start via SkillCurriculumCallback.
+
+hyperparams:
+  lr: 2.5e-4
+  n_steps: 1024
+  batch_size: 256
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  entropy_coef: 0.03            # matches baseline — keep exploration alive
+  value_coef: 0.5
+  max_grad_norm: 0.5
+
+training:
+  total_timesteps: 3000000
+  checkpoint_freq: 250000
+
+eval:
+  eval_freq: 25000
+  n_episodes: 10
+
+policy:
+  features_dim: 512
+  net_arch: []
+
+# Bot-count curriculum.
+#
+# ``promote_at`` is the raw eval mean reward, which for deathmatch
+# equals mean frags per episode (the scenario tracks KILLCOUNT delta).
+# See BENCHMARKS.md for the frag bands used to pick these thresholds:
+# ~2 frags = "learning something", 5-8 = "decent", 10+ = "strong".
+#
+# Thresholds below the published "decent" band on purpose — we want
+# to ramp as soon as the policy is reliably scoring on the current
+# rung, not wait until it's fully mastered.
+#
+# min_evals_between_promotions=2 avoids jumping stages on a single
+# lucky eval; the callback requires at least two eval windows above
+# threshold before promoting.
+curriculum:
+  enabled: true
+  min_evals_between_promotions: 2
+  sync_eval_env: true
+  stages:
+    - {num_bots: 2, promote_at: 3.0}
+    - {num_bots: 4, promote_at: 5.0}
+    - {num_bots: 8, promote_at: null}   # terminal stage

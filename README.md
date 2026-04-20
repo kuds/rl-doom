@@ -104,13 +104,22 @@ python -m rl_doom.train --config configs/recurrent_ppo_deadly_corridor.yaml
 - Designed for partially-observable scenarios where a 4-frame stack isn't enough memory (deadly_corridor enemies leaving FOV, deathmatch map exploration)
 - Wall-clock slower than PPO at the same step count because the LSTM forward/backward serialises within each rollout segment
 
-## Skill Curriculum Learning
+## Curriculum Learning
 
-Deadly Corridor is dominated by the death penalty at Doom skill 3 — the
-imps kill the agent before it discovers the "push forward + shoot"
-gradient. Every scenario config now accepts an optional `curriculum:`
-block that ramps `doom_skill` up during training once the agent clears
-a per-stage eval threshold:
+Every scenario config accepts an optional `curriculum:` block that ramps
+one of two difficulty knobs during training once the agent clears a
+per-stage eval threshold:
+
+- **`skill`** — ViZDoom's `doom_skill` (1..5). Used by Deadly Corridor,
+  where the death penalty at skill 3 kills the agent before it can
+  discover the "push forward + shoot" gradient. Starting on skill 1
+  lets the policy learn distance shaping first, then ramping up to
+  skill 3 tunes combat without losing the navigation prior.
+- **`num_bots`** — count of ZDoom AI bots spawned on the deathmatch
+  map. With 0 bots the scenario has no enemies and zero reward signal;
+  with 8 bots a fresh policy dies before landing kills. A 2 → 4 → 8
+  ramp gives frequent combat encounters that scale with the policy's
+  capability.
 
 ```yaml
 curriculum:
@@ -129,18 +138,24 @@ per-skill reference scores used to calibrate them.
 
 Paired "baseline vs. curriculum" YAMLs live under `configs/`:
 
-| Baseline | Curriculum |
-|---|---|
-| `ppo_deadly_corridor.yaml` | `ppo_deadly_corridor_curriculum.yaml` |
-| `dqn_deadly_corridor.yaml` | `dqn_deadly_corridor_curriculum.yaml` |
-| `recurrent_ppo_deadly_corridor.yaml` | `recurrent_ppo_deadly_corridor_curriculum.yaml` |
+| Scenario | Baseline | Curriculum (knob) |
+|---|---|---|
+| Deadly Corridor | `ppo_deadly_corridor.yaml` | `ppo_deadly_corridor_curriculum.yaml` (skill) |
+| Deadly Corridor | `dqn_deadly_corridor.yaml` | `dqn_deadly_corridor_curriculum.yaml` (skill) |
+| Deadly Corridor | `recurrent_ppo_deadly_corridor.yaml` | `recurrent_ppo_deadly_corridor_curriculum.yaml` (skill) |
+| Deathmatch | `ppo_deathmatch.yaml` | `ppo_deathmatch_curriculum.yaml` (num_bots) |
+| Deathmatch | `dqn_deathmatch.yaml` | `dqn_deathmatch_curriculum.yaml` (num_bots) |
+| Deathmatch | `recurrent_ppo_deathmatch.yaml` | `recurrent_ppo_deathmatch_curriculum.yaml` (num_bots) |
 
 Under the hood, `SkillCurriculumCallback`
 (`src/rl_doom/curriculum.py`) watches the SB3 `EvalCallback` and, when
-the eval mean clears the current stage's `promote_at`, calls
-`DoomGame.set_doom_skill` on every training and eval worker. The
-promotion timeline is saved to `metrics/curriculum.json` inside the run
-directory and also logged to TensorBoard as `curriculum/skill`.
+the eval mean clears the current stage's `promote_at`, applies the new
+stage's knobs: `DoomGame.set_doom_skill` for `skill` changes and a
+direct write to `DoomEnv._num_bots` for `num_bots` changes (the latter
+takes effect on the next `reset()` because `addbot` commands are
+re-issued per episode). The promotion timeline is saved to
+`metrics/curriculum.json` and logged to TensorBoard as
+`curriculum/skill`, `curriculum/num_bots`, `curriculum/stage_index`.
 
 ## Experiment Matrix Runner
 

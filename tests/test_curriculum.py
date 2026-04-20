@@ -20,6 +20,7 @@ from rl_doom.curriculum import (  # noqa: E402 — import after skip guard
     CurriculumStage,
     SkillCurriculumCallback,
     _iter_inner_envs,
+    _set_num_bots_on_vec_env,
     _set_skill_on_vec_env,
     parse_curriculum_config,
 )
@@ -143,9 +144,33 @@ def test_parse_curriculum_requires_stages() -> None:
         parse_curriculum_config({"enabled": True})
 
 
-def test_parse_curriculum_requires_skill_field() -> None:
-    with pytest.raises(ValueError, match="missing required 'skill'"):
+def test_parse_curriculum_requires_skill_or_num_bots_field() -> None:
+    with pytest.raises(ValueError, match="'skill' and/or 'num_bots'"):
         parse_curriculum_config({"stages": [{"promote_at": 10}]})
+
+
+def test_parse_curriculum_accepts_num_bots_only() -> None:
+    cfg = {
+        "stages": [
+            {"num_bots": 2, "promote_at": 3.0},
+            {"num_bots": 4, "promote_at": 5.0},
+            {"num_bots": 8, "promote_at": None},
+        ],
+    }
+    stages = parse_curriculum_config(cfg)
+    assert stages is not None
+    assert stages[0] == CurriculumStage(num_bots=2, promote_at=3.0)
+    assert stages[-1] == CurriculumStage(num_bots=8, promote_at=None)
+
+
+def test_curriculum_stage_requires_at_least_one_knob() -> None:
+    with pytest.raises(ValueError, match="must set at least one"):
+        CurriculumStage(promote_at=10.0)
+
+
+def test_curriculum_stage_rejects_negative_num_bots() -> None:
+    with pytest.raises(ValueError, match="num_bots must be >= 0"):
+        CurriculumStage(num_bots=-1, promote_at=1.0)
 
 
 def test_parse_curriculum_non_terminal_promote_at_required() -> None:
@@ -189,6 +214,20 @@ def test_set_skill_walks_gym_wrapper_chain() -> None:
     assert raw._doom_skill == 2
 
 
+def test_set_num_bots_walks_gym_wrapper_chain() -> None:
+    class _BotInner:
+        def __init__(self) -> None:
+            self._num_bots = 0
+
+    raw = _BotInner()
+    wrapped_once = _FakeWrapper(raw)
+    wrapped_twice = _FakeWrapper(wrapped_once)
+    vec = _FakeVecEnv([wrapped_twice])
+
+    _set_num_bots_on_vec_env(vec, 5)
+    assert raw._num_bots == 5
+
+
 # ---------------------------------------------------------------------------
 # SkillCurriculumCallback
 # ---------------------------------------------------------------------------
@@ -226,7 +265,13 @@ def test_on_training_start_applies_initial_skill_to_train_and_eval() -> None:
     assert train_env.game.skill == 1
     assert eval_env.game.skill == 1
     assert cb.promotions == [
-        {"step": 0, "skill": 1, "trigger": "initial", "eval_mean_reward": None},
+        {
+            "step": 0,
+            "skill": 1,
+            "num_bots": None,
+            "trigger": "initial",
+            "eval_mean_reward": None,
+        },
     ]
 
 
@@ -352,3 +397,93 @@ def test_same_eval_timestep_processed_once() -> None:
     # One evaluation only; below threshold; still on stage 1.
     assert cb._evals_since_promotion == 1
     assert cb.current_skill == 1
+
+
+# ---------------------------------------------------------------------------
+# Bot-count curriculum (num_bots) variant
+# ---------------------------------------------------------------------------
+
+
+class _FakeBotEnv:
+    """DoomEnv stand-in for bot curriculum tests.
+
+    The bot-count callback mutates ``_num_bots`` directly (unlike skill,
+    which goes through ``game.set_doom_skill``). This fake reflects that:
+    no ``game`` attribute, just the field the callback writes.
+    """
+
+    def __init__(self, initial: int = 0) -> None:
+        self._num_bots = initial
+
+
+def test_bot_curriculum_applies_initial_and_promotes() -> None:
+    train = _FakeBotEnv(initial=0)
+    eval_env = _FakeBotEnv(initial=0)
+    eval_cb = _FakeEvalCallback(eval_env=_FakeVecEnv([eval_env]))
+    stages = [
+        CurriculumStage(num_bots=2, promote_at=3.0),
+        CurriculumStage(num_bots=4, promote_at=5.0),
+        CurriculumStage(num_bots=8, promote_at=None),
+    ]
+    cb = SkillCurriculumCallback(
+        eval_cb,  # type: ignore[arg-type]
+        stages,
+        verbose=0,
+    )
+    _prime(cb, vec_env=_FakeVecEnv([train]))
+
+    cb._on_training_start()
+    assert train._num_bots == 2
+    assert eval_env._num_bots == 2
+    # The initial promotion entry carries num_bots, not skill.
+    assert cb.promotions[0]["num_bots"] == 2
+    assert cb.promotions[0]["skill"] is None
+
+    eval_cb.push_eval(timestep=1000, mean_reward=3.5)
+    cb.model.num_timesteps = 1000
+    cb._on_step()
+    assert train._num_bots == 4
+    assert eval_env._num_bots == 4
+    assert cb.current_num_bots == 4
+
+    eval_cb.push_eval(timestep=2000, mean_reward=6.0)
+    cb.model.num_timesteps = 2000
+    cb._on_step()
+    assert cb.current_num_bots == 8
+    assert cb.is_terminal is True
+
+
+def test_combined_skill_and_num_bots_stage_applies_both() -> None:
+    """Stages may ramp both knobs at once."""
+    # Build an env that supports both the game/skill path and the
+    # _num_bots path so we can assert on both.
+    class _Both(_FakeDoomEnv):
+        def __init__(self) -> None:
+            super().__init__()
+            self._num_bots = 0
+
+    train = _Both()
+    eval_env = _Both()
+    eval_cb = _FakeEvalCallback(eval_env=_FakeVecEnv([eval_env]))
+    stages = [
+        CurriculumStage(skill=1, num_bots=2, promote_at=10.0),
+        CurriculumStage(skill=3, num_bots=8, promote_at=None),
+    ]
+    cb = SkillCurriculumCallback(
+        eval_cb,  # type: ignore[arg-type]
+        stages,
+        verbose=0,
+    )
+    _prime(cb, vec_env=_FakeVecEnv([train]))
+
+    cb._on_training_start()
+    assert train.game.skill == 1
+    assert train._num_bots == 2
+
+    eval_cb.push_eval(timestep=1000, mean_reward=15.0)
+    cb.model.num_timesteps = 1000
+    cb._on_step()
+    assert train.game.skill == 3
+    assert train._num_bots == 8
+    assert eval_env.game.skill == 3
+    assert eval_env._num_bots == 8
