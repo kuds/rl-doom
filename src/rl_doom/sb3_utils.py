@@ -488,6 +488,7 @@ def _record_video(
     # so we always pass them and keep one code path.
     frames: list[np.ndarray] = []
     separator: np.ndarray | None = None
+    episode_stats: list[dict[str, Any]] = []
     for ep in range(max(n_episodes, 1)):
         obs, _ = env.reset()
         first = _frame()
@@ -498,6 +499,10 @@ def _record_video(
         frames.append(first)
         done = False
         step = 0
+        total_reward = 0.0
+        last_info: dict[str, Any] = {}
+        terminated = False
+        truncated = False
         lstm_states: Any = None
         episode_start = np.array([True])
         while not done and step < max_steps:
@@ -507,14 +512,36 @@ def _record_video(
                 episode_start=episode_start,
                 deterministic=True,
             )
-            obs, _, terminated, truncated, _ = env.step(int(action))
+            obs, reward, terminated, truncated, last_info = env.step(int(action))
+            total_reward += float(reward)
             frames.append(_frame())
             done = terminated or truncated
             episode_start = np.array([False])
             step += 1
+        if terminated:
+            termination = str(last_info.get("termination_reason", "unknown"))
+        elif truncated or step >= max_steps:
+            termination = "truncated"
+        else:
+            termination = "unknown"
+        episode_stats.append(
+            {
+                "episode": ep + 1,
+                "reward": round(total_reward, 4),
+                "length_steps": step,
+                "termination": termination,
+            },
+        )
     env.close()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Sidecar JSON next to the video so downstream tooling (and humans)
+    # can tell which of the N concatenated playthroughs did what without
+    # having to scrub the clip. One entry per episode, in clip order.
+    stats_path = out_path.with_name(out_path.stem + "_episodes.json")
+    stats_path.write_text(
+        json.dumps({"fps": fps, "episodes": episode_stats}, indent=2),
+    )
     # imageio.mimsave's stub varies across versions; cast sidesteps variance.
     imgs = cast(Any, frames)
     try:
