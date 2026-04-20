@@ -73,6 +73,16 @@ def _load_termination_report(run_dir: Path) -> dict[str, Any]:
     return {}
 
 
+def _load_curriculum_report(run_dir: Path) -> dict[str, Any]:
+    path = run_dir / "metrics" / "curriculum.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (ValueError, OSError):
+            return {}
+    return {}
+
+
 def _best_eval(eval_arr: np.ndarray) -> tuple | None:
     if eval_arr.ndim != 2 or eval_arr.shape[0] == 0:
         return None
@@ -86,6 +96,7 @@ def generate_run_summary(run_dir: Path) -> str:
     cfg = _load_config(run_dir)
     metrics = _load_metrics(run_dir)
     terminations = _load_termination_report(run_dir)
+    curriculum = _load_curriculum_report(run_dir)
 
     env_name = cfg.get("env", run_dir.parents[1].name)
     algo_name = cfg.get("algo", run_dir.parents[0].name)
@@ -241,6 +252,34 @@ def generate_run_summary(run_dir: Path) -> str:
             lines.append(
                 f"  {reason:14s} {count:>6}  ({frac * 100:5.1f}%)",
             )
+
+    if curriculum:
+        stages = curriculum.get("stages") or []
+        promotions = curriculum.get("promotions") or []
+        final_skill = curriculum.get("final_skill")
+        final_stage_index = curriculum.get("final_stage_index")
+        lines += ["", "Curriculum", "-" * 40]
+        if final_skill is not None:
+            stage_str = (
+                f" (stage {int(final_stage_index) + 1} / {len(stages)})"
+                if final_stage_index is not None and stages
+                else ""
+            )
+            lines.append(f"  Final skill:    {final_skill}{stage_str}")
+        # Promotion timeline: each entry is {step, skill, trigger, eval_mean_reward}.
+        # The first entry is always the initial skill; skip it so we only list
+        # the actual promotions.
+        promoted = [p for p in promotions if p.get("trigger") == "promotion"]
+        if promoted:
+            lines.append(f"  Promotions:     {len(promoted)}")
+            for p in promoted:
+                step = _fmt_number(p.get("step", 0))
+                skill = p.get("skill", "?")
+                mean_r = p.get("eval_mean_reward")
+                mean_str = f"{mean_r:.2f}" if isinstance(mean_r, (int, float)) else "N/A"
+                lines.append(
+                    f"    step {step:>12s} -> skill {skill}  (eval_mean={mean_str})",
+                )
 
     lines.append("")
     return "\n".join(lines)

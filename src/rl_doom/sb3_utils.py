@@ -546,7 +546,7 @@ def train_sb3(
     checkpoint_freq: int = 50_000,
     record_video: bool = True,
     video_fps: int = 20,
-    video_episodes: int = 1,
+    video_episodes: int = 5,
     device: str | torch.device | None = None,
     verbose: int = 0,
     on_complete: Callable[[Path], None] | None = None,
