@@ -450,6 +450,12 @@ def _record_video(
     fps: int = 20,
     max_steps: int = 5_000,
     n_episodes: int = 1,
+    resize_shape: tuple[int, int] = (84, 84),
+    frame_skip: int = 4,
+    num_stack: int = 4,
+    use_compound_actions: bool = True,
+    doom_skill: int | None = None,
+    num_bots: int = 0,
 ) -> list[Path]:
     """Record ``n_episodes`` greedy rollouts as separate video files.
 
@@ -457,7 +463,10 @@ def _record_video(
     file named ``<stem>_ep<N>.mp4`` next to ``out_path``; e.g.
     ``media/ppo_deadly_corridor_ep1.mp4``. A single ``_episodes.json``
     sidecar lists the per-episode reward, length (steps), and
-    termination reason in playback order.
+    termination reason in playback order, alongside the env-config
+    (``doom_skill``, ``num_bots``, and wrapper settings) the clips were
+    recorded under so downstream tooling can tell at a glance which
+    difficulty the videos actually show.
 
     ``max_steps`` is per-episode, not total. Returns the list of video
     paths actually written (empty if encoding failed for every episode).
@@ -466,7 +475,15 @@ def _record_video(
 
     from rl_doom.env import make_wrapped_env
 
-    env = make_wrapped_env(scenario)
+    env = make_wrapped_env(
+        scenario,
+        resize_shape=resize_shape,
+        frame_skip=frame_skip,
+        num_stack=num_stack,
+        use_compound_actions=use_compound_actions,
+        doom_skill=doom_skill,
+        num_bots=num_bots,
+    )
     # Walk down wrappers to grab raw RGB frames from DoomEnv.render().
     base_env = env
     while hasattr(base_env, "env"):
@@ -550,10 +567,29 @@ def _record_video(
 
     # Single JSON summary describing every per-episode clip. Kept alongside
     # the videos so downstream tooling can map clip -> reward/termination
-    # without re-running the model.
+    # without re-running the model. ``env_config`` records the exact env
+    # settings the clips were recorded under — most importantly ``doom_skill``
+    # and ``num_bots``, which must match the eval env for the reported
+    # rewards/terminations to agree with ``stage_summary.txt``.
     stats_path = out_path.with_name(out_path.stem + "_episodes.json")
     stats_path.write_text(
-        json.dumps({"fps": fps, "episodes": episode_stats}, indent=4) + "\n",
+        json.dumps(
+            {
+                "fps": fps,
+                "env_config": {
+                    "scenario": scenario,
+                    "doom_skill": doom_skill,
+                    "num_bots": num_bots,
+                    "resize_shape": list(resize_shape),
+                    "frame_skip": frame_skip,
+                    "num_stack": num_stack,
+                    "use_compound_actions": use_compound_actions,
+                },
+                "episodes": episode_stats,
+            },
+            indent=4,
+        )
+        + "\n",
     )
     return video_paths
 
@@ -842,12 +878,31 @@ def train_sb3(
             video_model: BaseAlgorithm = cls.load(str(best_ckpt), device=device)
         else:
             video_model = model
+        # Match the video env to the eval env. When a curriculum ran, the
+        # relevant difficulty is the highest rung the agent actually reached
+        # (``current_skill``/``current_num_bots``) — that's what
+        # ``EvalCallback`` was measuring against at the end of training, so
+        # the recorded clip should use the same setting. Without a curriculum
+        # we fall back to the fixed ``doom_skill``/``num_bots`` the caller
+        # passed in.
+        if curriculum_cb is not None:
+            video_doom_skill = curriculum_cb.current_skill
+            video_num_bots = curriculum_cb.current_num_bots or 0
+        else:
+            video_doom_skill = doom_skill
+            video_num_bots = num_bots
         video_paths = _record_video(
             video_model,
             scenario,
             media_dir / out_name,
             fps=video_fps,
             n_episodes=video_episodes,
+            resize_shape=resize_shape,
+            frame_skip=frame_skip,
+            num_stack=num_stack,
+            use_compound_actions=use_compound_actions,
+            doom_skill=video_doom_skill,
+            num_bots=video_num_bots,
         )
 
     # Finalise config.json + latest pointer, then write the per-run summary.
