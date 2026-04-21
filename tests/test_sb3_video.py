@@ -73,18 +73,26 @@ class _FakeModel:
 
 @pytest.fixture
 def fake_make_env(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """Replace ``make_wrapped_env`` with a stub that captures its kwargs."""
+    """Replace ``rl_doom.env.make_wrapped_env`` with a stub that captures kwargs.
+
+    We install a minimal fake ``rl_doom.env`` module into ``sys.modules``
+    so ``_record_video``'s inner ``from rl_doom.env import make_wrapped_env``
+    picks up the stub without triggering the real module's ``import vizdoom``.
+    That keeps this test runnable on CI where the ViZDoom native binary
+    isn't installed.
+    """
+    import sys
+    import types
+
     calls: list[dict[str, Any]] = []
 
     def _stub(scenario: str, **kwargs: Any) -> _FakeEnv:
         calls.append({"scenario": scenario, **kwargs})
         return _FakeEnv(scenario=scenario, **kwargs)
 
-    # ``_record_video`` does ``from rl_doom.env import make_wrapped_env``
-    # inside the function, so patch the source module.
-    import rl_doom.env as env_mod
-
-    monkeypatch.setattr(env_mod, "make_wrapped_env", _stub)
+    fake_mod = types.ModuleType("rl_doom.env")
+    fake_mod.make_wrapped_env = _stub  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rl_doom.env", fake_mod)
     return calls
 
 
