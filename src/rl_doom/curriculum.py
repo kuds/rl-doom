@@ -49,6 +49,8 @@ from typing import Any, Iterable
 
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
+from rl_doom.env import MAX_NUM_BOTS
+
 
 @dataclass(frozen=True)
 class CurriculumStage:
@@ -60,8 +62,9 @@ class CurriculumStage:
     * ``skill`` — ViZDoom's ``doom_skill`` (1..5), controls monster AI
       aggressiveness. Used by deadly_corridor / defend_the_center.
     * ``num_bots`` — count of ZDoom AI bots spawned via ``addbot`` at
-      each ``reset()``. Used by deathmatch-style maps where the enemies
-      are player-style bots, not scenario monsters.
+      each ``reset()``, capped at :data:`~rl_doom.env.MAX_NUM_BOTS`.
+      Used by deathmatch-style maps where the enemies are player-style
+      bots, not scenario monsters.
 
     At least one of the two must be set. ``promote_at`` is the
     eval-reward threshold that triggers promotion to the *next* stage;
@@ -81,9 +84,10 @@ class CurriculumStage:
             raise ValueError(
                 f"CurriculumStage.skill must be in [1, 5], got {self.skill!r}",
             )
-        if self.num_bots is not None and self.num_bots < 0:
+        if self.num_bots is not None and not 0 <= self.num_bots <= MAX_NUM_BOTS:
             raise ValueError(
-                f"CurriculumStage.num_bots must be >= 0, got {self.num_bots!r}",
+                f"CurriculumStage.num_bots must be in [0, {MAX_NUM_BOTS}], "
+                f"got {self.num_bots!r}",
             )
 
 

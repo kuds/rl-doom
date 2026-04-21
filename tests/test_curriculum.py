@@ -169,8 +169,18 @@ def test_curriculum_stage_requires_at_least_one_knob() -> None:
 
 
 def test_curriculum_stage_rejects_negative_num_bots() -> None:
-    with pytest.raises(ValueError, match="num_bots must be >= 0"):
+    with pytest.raises(ValueError, match=r"num_bots must be in \[0, 8\]"):
         CurriculumStage(num_bots=-1, promote_at=1.0)
+
+
+def test_curriculum_stage_rejects_num_bots_above_max() -> None:
+    with pytest.raises(ValueError, match=r"num_bots must be in \[0, 8\]"):
+        CurriculumStage(num_bots=9, promote_at=1.0)
+
+
+def test_curriculum_stage_accepts_num_bots_at_max() -> None:
+    stage = CurriculumStage(num_bots=8, promote_at=None)
+    assert stage.num_bots == 8
 
 
 def test_parse_curriculum_non_terminal_promote_at_required() -> None:

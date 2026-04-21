@@ -116,9 +116,10 @@ per-stage eval threshold:
   lets the policy learn distance shaping first, then ramping up to
   skill 3 tunes combat without losing the navigation prior.
 - **`num_bots`** — count of ZDoom AI bots spawned on the deathmatch
-  map. With 0 bots the scenario has no enemies and zero reward signal;
-  with 8 bots a fresh policy dies before landing kills. A 2 → 4 → 8
-  ramp gives frequent combat encounters that scale with the policy's
+  map (capped at 8, matching the stock `deathmatch.cfg` roster). With
+  0 bots the scenario has no enemies and zero reward signal; with 8
+  bots a fresh policy dies before landing kills. A 2 → 4 → 8 ramp
+  gives frequent combat encounters that scale with the policy's
   capability.
 
 ```yaml

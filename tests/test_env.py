@@ -54,6 +54,31 @@ def test_unknown_scenario_raises() -> None:
         DoomEnv(scenario="not_a_real_scenario")
 
 
+def test_num_bots_rejects_negative() -> None:
+    from rl_doom.env import DoomEnv
+
+    with pytest.raises(ValueError, match=r"num_bots must be in \[0, 8\]"):
+        DoomEnv(scenario="deathmatch", num_bots=-1)
+
+
+def test_num_bots_rejects_above_max() -> None:
+    from rl_doom.env import DoomEnv
+
+    with pytest.raises(ValueError, match=r"num_bots must be in \[0, 8\]"):
+        DoomEnv(scenario="deathmatch", num_bots=9)
+
+
+def test_num_bots_accepts_max() -> None:
+    from rl_doom.env import MAX_NUM_BOTS, DoomEnv
+
+    assert MAX_NUM_BOTS == 8
+    env = DoomEnv(scenario="deathmatch", num_bots=MAX_NUM_BOTS)
+    try:
+        assert env._num_bots == MAX_NUM_BOTS
+    finally:
+        env.close()
+
+
 # ---------------------------------------------------------------------------
 # Compound action space
 # ---------------------------------------------------------------------------

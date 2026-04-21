@@ -114,6 +114,13 @@ SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
 SCENARIO_DEFAULT_SKILL: dict[str, int] = {}
 
 
+# Upper bound on ZDoom AI bots spawned per episode via ``addbot``. The stock
+# deathmatch.cfg ships an 8-entry bot roster, so requesting more bots either
+# recycles names or silently drops them; capping here makes the failure mode
+# explicit instead of scenario-dependent.
+MAX_NUM_BOTS: int = 8
+
+
 class DoomEnv(gym.Env):
     """Gymnasium wrapper around a ViZDoom game instance.
 
@@ -134,7 +141,7 @@ class DoomEnv(gym.Env):
         Number of ZDoom AI-controlled bots to spawn via ``addbot`` at the
         start of each episode. Only meaningful on deathmatch-style maps;
         non-deathmatch scenarios will silently ignore the addbot command.
-        Defaults to 0 (no bots).
+        Must be in ``[0, MAX_NUM_BOTS]``. Defaults to 0 (no bots).
     """
 
     metadata = {"render_modes": ["rgb_array"]}
@@ -157,6 +164,11 @@ class DoomEnv(gym.Env):
                 f"Available: {list(SCENARIO_MAP)}"
             )
 
+        if not 0 <= num_bots <= MAX_NUM_BOTS:
+            raise ValueError(
+                f"num_bots must be in [0, {MAX_NUM_BOTS}], got {num_bots!r}"
+            )
+
         self.game = vizdoom.DoomGame()
         self.game.load_config(f"{vizdoom.scenarios_path}/{cfg_name}")
         self.game.set_window_visible(False)
@@ -172,8 +184,6 @@ class DoomEnv(gym.Env):
             self.game.set_doom_skill(skill)
         self._doom_skill = skill
 
-        if num_bots < 0:
-            raise ValueError(f"num_bots must be >= 0, got {num_bots!r}")
         self._num_bots = num_bots
 
         self.game.init()
