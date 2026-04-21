@@ -28,7 +28,7 @@ hyperparams:
   max_grad_norm: 0.5
 
 training:
-  total_timesteps: 3000000
+  total_timesteps: 2500000
   checkpoint_freq: 250000
 
 eval:
