@@ -11,7 +11,7 @@ skill 3 for Deadly Corridor? Populated as matrix runs land.
 - **Seeds per cell:** 3 (`42`, `123`, `777`)
 - **Total cells:** 6 variants × 3 seeds = 18 runs
 - **Budget:** each variant uses its own YAML's `training.total_timesteps`
-  (3 M for every variant — see `configs/*deadly_corridor*.yaml`)
+  (2.5 M for every variant — see `configs/*deadly_corridor*.yaml`)
 - **Curriculum stages (all algorithms):**
   `skill 1 → 2 @ eval≥1500`, `skill 2 → 3 @ eval≥1500`, `skill 3 terminal`.
   Thresholds are on the raw eval-reward scale (`EvalCallback` reports
