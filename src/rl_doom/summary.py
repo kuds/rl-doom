@@ -16,6 +16,8 @@ from typing import Any
 
 import numpy as np
 
+from rl_doom import __version__ as _PACKAGE_VERSION
+
 SCENARIO_LABELS: dict[str, str] = {
     "basic": "Basic",
     "deadly_corridor": "Deadly Corridor",
@@ -159,12 +161,18 @@ def generate_run_summary(run_dir: Path) -> str:
     else:
         recent_str = "N/A"
 
+    # Prefer the version recorded in config.json (captures the code that
+    # produced the artefacts); fall back to the installed package version for
+    # runs written before the field was added.
+    version_str = cfg.get("version") or _PACKAGE_VERSION
+
     title = f"rl-doom: {algo_label} on {env_label}"
     lines = [
         title,
         "=" * max(50, len(title)),
         "",
         "Project:        rl-doom",
+        f"Version:        {version_str}",
         f"Environment:    ViZDoom — {env_label}",
         f"Algorithm:      {algo_label}",
         f"Seed:           {cfg.get('seed', 'N/A')}",
