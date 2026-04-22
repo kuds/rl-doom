@@ -79,6 +79,37 @@ def test_num_bots_accepts_max() -> None:
         env.close()
 
 
+def test_reset_clears_bots_before_new_episode() -> None:
+    """``reset()`` must issue ``removebots`` before ``new_episode`` so that
+    ``addbot`` invocations don't accumulate across episodes and exhaust the
+    map's player-start slots (raising ``No player N start`` from ZDoom)."""
+    from rl_doom.env import DoomEnv
+
+    env = DoomEnv(scenario="deathmatch", num_bots=4)
+    try:
+        calls: list[str] = []
+        original = env.game.send_game_command
+
+        def _record(cmd: str) -> None:
+            calls.append(cmd)
+            return original(cmd)
+
+        env.game.send_game_command = _record  # type: ignore[method-assign]
+        env.reset()
+        env.reset()
+    finally:
+        env.close()
+
+    # Every reset with num_bots>0 must call removebots exactly once before
+    # the addbot burst; expect that pattern on both resets.
+    assert calls.count("removebots") == 2
+    assert calls.count("addbot") == 8
+    # Order per reset: removebots, then 4x addbot.
+    for start in (0, 5):
+        assert calls[start] == "removebots"
+        assert calls[start + 1 : start + 5] == ["addbot"] * 4
+
+
 # ---------------------------------------------------------------------------
 # Compound action space
 # ---------------------------------------------------------------------------

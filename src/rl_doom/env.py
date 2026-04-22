@@ -256,6 +256,13 @@ class DoomEnv(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self.game.set_seed(seed)
+        # ``addbot`` bots persist across ``new_episode`` calls, so without
+        # an explicit ``removebots`` they accumulate every reset until the
+        # map runs out of player-start slots and ZDoom raises
+        # "No player N start". Mirror the canonical ViZDoom bots.py pattern:
+        # clear any lingering bots before adding this episode's fresh set.
+        if self._num_bots > 0:
+            self.game.send_game_command("removebots")
         self.game.new_episode()
         for _ in range(self._num_bots):
             self.game.send_game_command("addbot")
