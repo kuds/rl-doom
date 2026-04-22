@@ -15,6 +15,11 @@ import gymnasium as gym
 import numpy as np
 import vizdoom
 
+# Re-exported so ``rl_doom.env.MAX_NUM_BOTS`` keeps working for existing callers;
+# the canonical definition lives in ``rl_doom.scenario_limits`` to keep it free
+# of the ``import vizdoom`` above and let ``rl_doom.curriculum`` share it.
+from rl_doom.scenario_limits import MAX_NUM_BOTS
+
 # Mapping from friendly scenario names to ViZDoom config filenames.
 SCENARIO_MAP: dict[str, str] = {
     "basic": "basic.cfg",
@@ -112,13 +117,6 @@ SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
 # Overriding here keeps train / eval / video / analysis envs in lock-step
 # without every call site having to pass a kwarg.
 SCENARIO_DEFAULT_SKILL: dict[str, int] = {}
-
-
-# Upper bound on ZDoom AI bots spawned per episode via ``addbot``. The stock
-# deathmatch.cfg ships an 8-entry bot roster, so requesting more bots either
-# recycles names or silently drops them; capping here makes the failure mode
-# explicit instead of scenario-dependent.
-MAX_NUM_BOTS: int = 8
 
 
 class DoomEnv(gym.Env):

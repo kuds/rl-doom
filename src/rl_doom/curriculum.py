@@ -49,7 +49,7 @@ from typing import Any, Iterable
 
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 
-from rl_doom.env import MAX_NUM_BOTS
+from rl_doom.scenario_limits import MAX_NUM_BOTS
 
 
 @dataclass(frozen=True)
@@ -62,7 +62,7 @@ class CurriculumStage:
     * ``skill`` — ViZDoom's ``doom_skill`` (1..5), controls monster AI
       aggressiveness. Used by deadly_corridor / defend_the_center.
     * ``num_bots`` — count of ZDoom AI bots spawned via ``addbot`` at
-      each ``reset()``, capped at :data:`~rl_doom.env.MAX_NUM_BOTS`.
+      each ``reset()``, capped at :data:`~rl_doom.scenario_limits.MAX_NUM_BOTS`.
       Used by deathmatch-style maps where the enemies are player-style
       bots, not scenario monsters.
 
