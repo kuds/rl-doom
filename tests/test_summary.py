@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from rl_doom import __version__ as PACKAGE_VERSION
 from rl_doom.summary import generate_run_summary
 
 
@@ -21,6 +22,7 @@ def _minimal_run_dir(
     *,
     curriculum: dict | None = None,
     terminations: dict | None = None,
+    config_overrides: dict | None = None,
 ) -> Path:
     """Write the files ``generate_run_summary`` reads.
 
@@ -31,20 +33,19 @@ def _minimal_run_dir(
     run_dir = tmp_path / "run"
     (run_dir / "metrics").mkdir(parents=True)
 
-    (run_dir / "config.json").write_text(
-        json.dumps(
-            {
-                "env": "deadly_corridor",
-                "algo": "ppo",
-                "seed": 42,
-                "hyperparams": {
-                    "lr": 2.5e-4,
-                    "total_timesteps": 3_000_000,
-                    "n_envs": 8,
-                },
-            },
-        ),
-    )
+    config: dict = {
+        "env": "deadly_corridor",
+        "algo": "ppo",
+        "seed": 42,
+        "hyperparams": {
+            "lr": 2.5e-4,
+            "total_timesteps": 3_000_000,
+            "n_envs": 8,
+        },
+    }
+    if config_overrides is not None:
+        config.update(config_overrides)
+    (run_dir / "config.json").write_text(json.dumps(config))
     np.savez(
         run_dir / "metrics" / "training.npz",
         eval_rewards=np.array([[1_000_000, 1730.46, 845.01, 50.0, 19.2]]),
@@ -150,3 +151,18 @@ def test_summary_handles_curriculum_with_only_initial_stage(
     # entirely since no promotions (only the initial entry) occurred.
     assert "stage 1 / 2" in out
     assert "Promotions:" not in out
+
+
+def test_summary_renders_version_from_config(tmp_path: Path) -> None:
+    """The summary surfaces the version recorded in ``config.json`` verbatim."""
+    run_dir = _minimal_run_dir(
+        tmp_path, config_overrides={"version": "9.9.9"},
+    )
+    out = generate_run_summary(run_dir)
+    assert "Version:        9.9.9" in out
+
+
+def test_summary_falls_back_to_package_version(tmp_path: Path) -> None:
+    """Runs written before the ``version`` field existed fall back cleanly."""
+    out = generate_run_summary(_minimal_run_dir(tmp_path))
+    assert f"Version:        {PACKAGE_VERSION}" in out

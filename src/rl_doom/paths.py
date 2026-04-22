@@ -175,10 +175,15 @@ def write_config(
     trained weights can be paired with the exact network definition that
     produced them.
     """
+    # Import locally to avoid a circular import at module load time; the
+    # package __init__ only needs to be resolved once write_config is called.
+    from rl_doom import __version__ as _rl_doom_version
+
     cfg = {
         "env": env,
         "algo": algo,
         "seed": seed,
+        "version": _rl_doom_version,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "git_sha": _git_sha(),
         "hyperparams": hyperparams,
