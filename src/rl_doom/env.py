@@ -15,6 +15,11 @@ import gymnasium as gym
 import numpy as np
 import vizdoom
 
+# Re-exported so ``rl_doom.env.MAX_NUM_BOTS`` keeps working for existing callers;
+# the canonical definition lives in ``rl_doom.scenario_limits`` to keep it free
+# of the ``import vizdoom`` above and let ``rl_doom.curriculum`` share it.
+from rl_doom.scenario_limits import MAX_NUM_BOTS
+
 # Mapping from friendly scenario names to ViZDoom config filenames.
 SCENARIO_MAP: dict[str, str] = {
     "basic": "basic.cfg",
@@ -134,7 +139,7 @@ class DoomEnv(gym.Env):
         Number of ZDoom AI-controlled bots to spawn via ``addbot`` at the
         start of each episode. Only meaningful on deathmatch-style maps;
         non-deathmatch scenarios will silently ignore the addbot command.
-        Defaults to 0 (no bots).
+        Must be in ``[0, MAX_NUM_BOTS]``. Defaults to 0 (no bots).
     """
 
     metadata = {"render_modes": ["rgb_array"]}
@@ -157,6 +162,11 @@ class DoomEnv(gym.Env):
                 f"Available: {list(SCENARIO_MAP)}"
             )
 
+        if not 0 <= num_bots <= MAX_NUM_BOTS:
+            raise ValueError(
+                f"num_bots must be in [0, {MAX_NUM_BOTS}], got {num_bots!r}"
+            )
+
         self.game = vizdoom.DoomGame()
         self.game.load_config(f"{vizdoom.scenarios_path}/{cfg_name}")
         self.game.set_window_visible(False)
@@ -172,8 +182,6 @@ class DoomEnv(gym.Env):
             self.game.set_doom_skill(skill)
         self._doom_skill = skill
 
-        if num_bots < 0:
-            raise ValueError(f"num_bots must be >= 0, got {num_bots!r}")
         self._num_bots = num_bots
 
         self.game.init()
@@ -246,6 +254,13 @@ class DoomEnv(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self.game.set_seed(seed)
+        # ``addbot`` bots persist across ``new_episode`` calls, so without
+        # an explicit ``removebots`` they accumulate every reset until the
+        # map runs out of player-start slots and ZDoom raises
+        # "No player N start". Mirror the canonical ViZDoom bots.py pattern:
+        # clear any lingering bots before adding this episode's fresh set.
+        if self._num_bots > 0:
+            self.game.send_game_command("removebots")
         self.game.new_episode()
         for _ in range(self._num_bots):
             self.game.send_game_command("addbot")
