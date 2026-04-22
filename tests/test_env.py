@@ -94,7 +94,7 @@ def test_reset_clears_bots_before_new_episode() -> None:
             calls.append(cmd)
             return original(cmd)
 
-        env.game.send_game_command = _record  # type: ignore[method-assign]
+        env.game.send_game_command = _record
         env.reset()
         env.reset()
     finally:
