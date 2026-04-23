@@ -246,6 +246,7 @@ class TerminationTracker(BaseCallback):
                     "reason": reason,
                     "episode_tics": info.get("episode_tics"),
                     "final_health": info.get("final_health"),
+                    "kills": info.get("kills"),
                 },
             )
         return True
@@ -270,7 +271,10 @@ def _write_termination_report(
     if tracker.episodes:
         with (metrics_dir / "termination_episodes.csv").open("w", newline="") as f:
             writer = csv.DictWriter(
-                f, fieldnames=["step", "reason", "episode_tics", "final_health"],
+                f,
+                fieldnames=[
+                    "step", "reason", "episode_tics", "final_health", "kills",
+                ],
             )
             writer.writeheader()
             for row in tracker.episodes:
@@ -554,6 +558,10 @@ def _record_video(
         clip_path = out_path.with_name(f"{out_path.stem}_ep{ep + 1}{out_path.suffix}")
         written = _write_clip(frames, clip_path)
         video_paths.append(written)
+        # ``kills`` comes straight from KILLCOUNT on the terminating step
+        # (populated by ``DoomEnv.step``); default to 0 when the episode
+        # got truncated before termination so the JSON schema is stable.
+        kills = int(last_info.get("kills") or 0) if terminated else 0
         episode_stats.append(
             {
                 "episode": ep + 1,
@@ -561,6 +569,7 @@ def _record_video(
                 "reward": round(total_reward, 4),
                 "length_steps": step,
                 "termination": termination,
+                "kills": kills,
             },
         )
     env.close()
@@ -844,6 +853,7 @@ def train_sb3(
         metrics_dir / "training.npz",
         episode_rewards=episodes.get("rewards", np.array([])),
         episode_lengths=episodes.get("lengths", np.array([])),
+        episode_kills=episodes.get("kills", np.array([])),
         # SB3 EvalCallback stores a 2-D (n_evals, n_eval_episodes) results
         # matrix; convert to the legacy 5-column (step, mean_r, std_r, mean_l,
         # std_l) layout that ``generate_summary.py`` consumes.
@@ -966,15 +976,22 @@ def _collect_episode_stats(monitor_dir: Path) -> dict[str, np.ndarray]:
     """Read all ``monitor_*.monitor.csv`` files and concatenate episode stats.
 
     SB3's Monitor writes a single-line JSON header followed by a CSV
-    (``r,l,t``). We append across workers in wall-clock order.
+    (``r,l,t``), plus any extra columns configured via ``info_keywords``
+    (we pass ``kills`` so per-episode enemy-kill counts are captured
+    alongside reward/length). We append across workers in wall-clock order.
     """
     monitor_dir = Path(monitor_dir)
     files = sorted(monitor_dir.glob("monitor_*.monitor.csv"))
     if not files:
-        return {"rewards": np.array([]), "lengths": np.array([])}
+        return {
+            "rewards": np.array([]),
+            "lengths": np.array([]),
+            "kills": np.array([]),
+        }
     rewards: list[float] = []
     lengths: list[int] = []
     timestamps: list[float] = []
+    kills: list[int] = []
     for path in files:
         with path.open() as f:
             # Skip the JSON header line.
@@ -989,12 +1006,24 @@ def _collect_episode_stats(monitor_dir: Path) -> dict[str, np.ndarray]:
                     timestamps.append(float(row["t"]))
                 except (KeyError, TypeError, ValueError):
                     continue
+                # ``kills`` is optional — older monitor CSVs predate the
+                # info_keywords wiring, so treat a missing/blank cell as 0.
+                raw_kills = row.get("kills", "")
+                try:
+                    kills.append(int(float(raw_kills)) if raw_kills != "" else 0)
+                except (TypeError, ValueError):
+                    kills.append(0)
     if not timestamps:
-        return {"rewards": np.array([]), "lengths": np.array([])}
+        return {
+            "rewards": np.array([]),
+            "lengths": np.array([]),
+            "kills": np.array([]),
+        }
     order: np.ndarray = np.argsort(timestamps)
     return {
         "rewards": np.asarray(rewards, dtype=np.float32)[order],
         "lengths": np.asarray(lengths, dtype=np.int64)[order],
+        "kills": np.asarray(kills, dtype=np.int64)[order],
     }
 
 

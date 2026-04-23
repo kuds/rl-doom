@@ -85,6 +85,30 @@ def _load_curriculum_report(run_dir: Path) -> dict[str, Any]:
     return {}
 
 
+def _load_video_episodes(run_dir: Path) -> list[dict[str, Any]]:
+    """Return per-episode stats from any ``media/*_episodes.json`` sidecar.
+
+    Training writes a single sidecar per best-checkpoint video run
+    (``<algo>_<scenario>_episodes.json``) containing one entry per greedy
+    rollout — reward, length, termination, and (since we started recording
+    KILLCOUNT) enemy kills. We aggregate across whatever sidecars exist so
+    the summary can report best-model kill averages.
+    """
+    media_dir = run_dir / "media"
+    if not media_dir.exists():
+        return []
+    episodes: list[dict[str, Any]] = []
+    for path in sorted(media_dir.glob("*_episodes.json")):
+        try:
+            data = json.loads(path.read_text())
+        except (ValueError, OSError):
+            continue
+        entries = data.get("episodes") if isinstance(data, dict) else None
+        if isinstance(entries, list):
+            episodes.extend(e for e in entries if isinstance(e, dict))
+    return episodes
+
+
 def _best_eval(eval_arr: np.ndarray) -> tuple | None:
     if eval_arr.ndim != 2 or eval_arr.shape[0] == 0:
         return None
@@ -99,6 +123,7 @@ def generate_run_summary(run_dir: Path) -> str:
     metrics = _load_metrics(run_dir)
     terminations = _load_termination_report(run_dir)
     curriculum = _load_curriculum_report(run_dir)
+    video_episodes = _load_video_episodes(run_dir)
 
     env_name = cfg.get("env", run_dir.parents[1].name)
     algo_name = cfg.get("algo", run_dir.parents[0].name)
@@ -129,6 +154,7 @@ def generate_run_summary(run_dir: Path) -> str:
     fps = float(metrics.get("fps", 0) or 0)
 
     ep_rewards = metrics.get("episode_rewards", np.array([]))
+    ep_kills = metrics.get("episode_kills", np.array([]))
     eval_rewards = metrics.get("eval_rewards", metrics.get("eval_log", np.array([])))
     if getattr(eval_rewards, "ndim", 0) == 1 and eval_rewards.size == 0:
         eval_rewards = np.empty((0, 5))
@@ -206,6 +232,25 @@ def generate_run_summary(run_dir: Path) -> str:
             f"({goal_n:,} / {total_for_rate:,} episodes)",
         )
 
+    # Enemy-kill totals come from ViZDoom's KILLCOUNT game variable, captured
+    # per episode in the Monitor CSVs. Surface both the cumulative count and
+    # the recent per-episode average so reward plateaus driven by combat
+    # behaviour are visible alongside the navigation-oriented success rate.
+    if getattr(ep_kills, "size", 0) > 0:
+        total_kills = int(np.sum(ep_kills))
+        mean_kills = float(np.mean(ep_kills))
+        lines.append(
+            f"Total kills:    {_fmt_number(total_kills)} "
+            f"({mean_kills:.2f} avg / episode)",
+        )
+        if ep_kills.size >= 20:
+            recent_kills_mean = float(np.mean(ep_kills[-20:]))
+            recent_kills_std = float(np.std(ep_kills[-20:]))
+            lines.append(
+                f"Recent kills:   {recent_kills_mean:.2f} +/- "
+                f"{recent_kills_std:.2f} (last 20 episodes)",
+            )
+
     if gpu:
         lines += [
             "",
@@ -239,6 +284,22 @@ def generate_run_summary(run_dir: Path) -> str:
             f"  Reward:         {best_mean:.2f} +/- {best_std:.2f}",
             f"  Ep length:      {best_len_str}",
         ]
+        # Per-episode kills from the best-checkpoint video rollouts, when
+        # a playback JSON is available. The videos are recorded with the
+        # best eval checkpoint, so the average here is the headline
+        # "enemies defeated per episode" for the shipped model.
+        kill_values = [
+            int(e["kills"])
+            for e in video_episodes
+            if isinstance(e.get("kills"), (int, float))
+        ]
+        if kill_values:
+            kills_arr = np.asarray(kill_values, dtype=np.int64)
+            lines.append(
+                f"  Avg kills:      {float(kills_arr.mean()):.2f} "
+                f"(over {kills_arr.size} rollout"
+                f"{'s' if kills_arr.size != 1 else ''})",
+            )
 
     counts = terminations.get("counts") or {}
     if counts:

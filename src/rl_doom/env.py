@@ -173,6 +173,15 @@ class DoomEnv(gym.Env):
         self.game.set_screen_format(vizdoom.ScreenFormat.RGB24)
         self.game.set_screen_resolution(vizdoom.ScreenResolution.RES_320X240)
 
+        # Ensure KILLCOUNT is exposed as a game variable even when the
+        # scenario's .cfg didn't opt into it. This mirrors the pattern in
+        # multiplayer_env.py for FRAGCOUNT/DEATHCOUNT and lets ``step`` report
+        # per-episode enemy kills in the info dict regardless of scenario.
+        existing_vars = list(self.game.get_available_game_variables())
+        if vizdoom.GameVariable.KILLCOUNT not in existing_vars:
+            existing_vars.append(vizdoom.GameVariable.KILLCOUNT)
+            self.game.set_available_game_variables(existing_vars)
+
         skill = doom_skill if doom_skill is not None else SCENARIO_DEFAULT_SKILL.get(scenario)
         if skill is not None:
             if not 1 <= skill <= 5:
@@ -282,6 +291,12 @@ class DoomEnv(gym.Env):
                 )
             except Exception:  # noqa: BLE001 — game var may be unavailable
                 info["final_health"] = None
+            try:
+                info["kills"] = int(
+                    self.game.get_game_variable(vizdoom.GameVariable.KILLCOUNT),
+                )
+            except Exception:  # noqa: BLE001 — game var may be unavailable
+                info["kills"] = 0
         return obs, reward, terminated, False, info
 
     def _classify_termination(self) -> str:
@@ -511,9 +526,14 @@ def make_sb3_env(
             # Seed the env deterministically per worker.
             env.reset(seed=seed + idx)
             if monitor_dir is not None:
+                # ``info_keywords`` tells Monitor to copy these keys from the
+                # terminal-step info dict into the per-episode CSV row, so
+                # downstream tooling can read kill counts straight from
+                # ``monitor_*.monitor.csv`` alongside reward/length.
                 env = Monitor(
                     env,
                     filename=str(Path(monitor_dir) / f"monitor_{idx}"),
+                    info_keywords=("kills",),
                 )
             return env
 
