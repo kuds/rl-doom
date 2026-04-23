@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from rl_doom import __version__ as _PACKAGE_VERSION
+from rl_doom.scenario_limits import EPISODE_METRIC_KEYS, EPISODE_METRIC_LABELS
 
 SCENARIO_LABELS: dict[str, str] = {
     "basic": "Basic",
@@ -85,6 +86,30 @@ def _load_curriculum_report(run_dir: Path) -> dict[str, Any]:
     return {}
 
 
+def _load_video_episodes(run_dir: Path) -> list[dict[str, Any]]:
+    """Return per-episode stats from any ``media/*_episodes.json`` sidecar.
+
+    Training writes a single sidecar per best-checkpoint video run
+    (``<algo>_<scenario>_episodes.json``) containing one entry per greedy
+    rollout — reward, length, termination, and (since we started recording
+    KILLCOUNT) enemy kills. We aggregate across whatever sidecars exist so
+    the summary can report best-model kill averages.
+    """
+    media_dir = run_dir / "media"
+    if not media_dir.exists():
+        return []
+    episodes: list[dict[str, Any]] = []
+    for path in sorted(media_dir.glob("*_episodes.json")):
+        try:
+            data = json.loads(path.read_text())
+        except (ValueError, OSError):
+            continue
+        entries = data.get("episodes") if isinstance(data, dict) else None
+        if isinstance(entries, list):
+            episodes.extend(e for e in entries if isinstance(e, dict))
+    return episodes
+
+
 def _best_eval(eval_arr: np.ndarray) -> tuple | None:
     if eval_arr.ndim != 2 or eval_arr.shape[0] == 0:
         return None
@@ -99,6 +124,7 @@ def generate_run_summary(run_dir: Path) -> str:
     metrics = _load_metrics(run_dir)
     terminations = _load_termination_report(run_dir)
     curriculum = _load_curriculum_report(run_dir)
+    video_episodes = _load_video_episodes(run_dir)
 
     env_name = cfg.get("env", run_dir.parents[1].name)
     algo_name = cfg.get("algo", run_dir.parents[0].name)
@@ -129,6 +155,10 @@ def generate_run_summary(run_dir: Path) -> str:
     fps = float(metrics.get("fps", 0) or 0)
 
     ep_rewards = metrics.get("episode_rewards", np.array([]))
+    ep_metrics: dict[str, np.ndarray] = {
+        key: metrics.get(f"episode_{key}", np.array([]))
+        for key in EPISODE_METRIC_KEYS
+    }
     eval_rewards = metrics.get("eval_rewards", metrics.get("eval_log", np.array([])))
     if getattr(eval_rewards, "ndim", 0) == 1 and eval_rewards.size == 0:
         eval_rewards = np.empty((0, 5))
@@ -206,6 +236,34 @@ def generate_run_summary(run_dir: Path) -> str:
             f"({goal_n:,} / {total_for_rate:,} episodes)",
         )
 
+    # Per-episode combat/exploration metrics come from ViZDoom game
+    # variables (KILLCOUNT, DAMAGECOUNT, etc.), captured in the Monitor
+    # CSVs. Scenarios that don't expose a given metric (e.g. SECRETCOUNT
+    # in ``basic``) see an all-zero array; gate on ``any()`` so the block
+    # stays tidy instead of listing uniformly-zero lines.
+    nonzero_metrics = [
+        (key, arr)
+        for key, arr in ep_metrics.items()
+        if getattr(arr, "size", 0) > 0 and bool(np.any(arr))
+    ]
+    if nonzero_metrics:
+        lines += ["", "Training Episode Metrics", "-" * 40]
+        for key, arr in nonzero_metrics:
+            label = EPISODE_METRIC_LABELS.get(key, key)
+            total = int(np.sum(arr))
+            mean = float(np.mean(arr))
+            line = (
+                f"  {label + ':':16s}{_fmt_number(total):>10s} total  "
+                f"({mean:.2f} avg / episode)"
+            )
+            if arr.size >= 20:
+                recent_mean = float(np.mean(arr[-20:]))
+                recent_std = float(np.std(arr[-20:]))
+                line += (
+                    f"  |  last 20: {recent_mean:.2f} +/- {recent_std:.2f}"
+                )
+            lines.append(line)
+
     if gpu:
         lines += [
             "",
@@ -239,6 +297,29 @@ def generate_run_summary(run_dir: Path) -> str:
             f"  Reward:         {best_mean:.2f} +/- {best_std:.2f}",
             f"  Ep length:      {best_len_str}",
         ]
+        # Per-episode combat/exploration metrics from the best-checkpoint
+        # video rollouts, when a playback JSON is available. The videos
+        # are recorded with the best eval checkpoint, so these averages
+        # are the headline "what the shipped model actually does in an
+        # episode" numbers. Skip metrics that stayed at 0 across every
+        # rollout so scenario-irrelevant fields don't clutter the block.
+        n_rollouts = len(video_episodes)
+        if n_rollouts:
+            for key in EPISODE_METRIC_KEYS:
+                values = [
+                    int(e[key])
+                    for e in video_episodes
+                    if isinstance(e.get(key), (int, float))
+                ]
+                if not values or not any(values):
+                    continue
+                arr = np.asarray(values, dtype=np.int64)
+                label = EPISODE_METRIC_LABELS.get(key, key)
+                lines.append(
+                    f"  Avg {label.lower():12s} {float(arr.mean()):.2f} "
+                    f"(over {arr.size} rollout"
+                    f"{'s' if arr.size != 1 else ''})",
+                )
 
     counts = terminations.get("counts") or {}
     if counts:

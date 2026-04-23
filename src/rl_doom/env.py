@@ -18,7 +18,27 @@ import vizdoom
 # Re-exported so ``rl_doom.env.MAX_NUM_BOTS`` keeps working for existing callers;
 # the canonical definition lives in ``rl_doom.scenario_limits`` to keep it free
 # of the ``import vizdoom`` above and let ``rl_doom.curriculum`` share it.
-from rl_doom.scenario_limits import MAX_NUM_BOTS
+from rl_doom.scenario_limits import EPISODE_METRIC_KEYS, MAX_NUM_BOTS
+
+# Mapping from the vizdoom-free ``EPISODE_METRIC_KEYS`` to the game variables
+# that back them. Populating the info dict off this dict keeps env.py and the
+# downstream artefact schema in sync: add a key here and to
+# ``EPISODE_METRIC_KEYS`` and every consumer (Monitor CSV, training.npz,
+# termination CSV, video JSON, stage_summary.txt) picks it up automatically.
+EPISODE_METRIC_GAME_VARS: dict[str, "vizdoom.GameVariable"] = {
+    "kills": vizdoom.GameVariable.KILLCOUNT,
+    "damage_dealt": vizdoom.GameVariable.DAMAGECOUNT,
+    "damage_taken": vizdoom.GameVariable.DAMAGE_TAKEN,
+    "hits_dealt": vizdoom.GameVariable.HITCOUNT,
+    "hits_taken": vizdoom.GameVariable.HITS_TAKEN,
+    "items": vizdoom.GameVariable.ITEMCOUNT,
+    "secrets": vizdoom.GameVariable.SECRETCOUNT,
+}
+# Keep both tables in lock-step so a missing entry is loud, not silent.
+assert set(EPISODE_METRIC_GAME_VARS) == set(EPISODE_METRIC_KEYS), (
+    "EPISODE_METRIC_GAME_VARS must match EPISODE_METRIC_KEYS; "
+    f"missing: {set(EPISODE_METRIC_KEYS) - set(EPISODE_METRIC_GAME_VARS)}"
+)
 
 # Mapping from friendly scenario names to ViZDoom config filenames.
 SCENARIO_MAP: dict[str, str] = {
@@ -173,6 +193,20 @@ class DoomEnv(gym.Env):
         self.game.set_screen_format(vizdoom.ScreenFormat.RGB24)
         self.game.set_screen_resolution(vizdoom.ScreenResolution.RES_320X240)
 
+        # Ensure the combat/exploration game variables we surface in
+        # ``step``'s info dict are exposed even when the scenario's .cfg
+        # didn't opt into them. Mirrors the multiplayer_env pattern for
+        # FRAGCOUNT/DEATHCOUNT so every scenario reports a consistent set
+        # of per-episode metrics regardless of cfg.
+        existing_vars = list(self.game.get_available_game_variables())
+        changed = False
+        for gv in EPISODE_METRIC_GAME_VARS.values():
+            if gv not in existing_vars:
+                existing_vars.append(gv)
+                changed = True
+        if changed:
+            self.game.set_available_game_variables(existing_vars)
+
         skill = doom_skill if doom_skill is not None else SCENARIO_DEFAULT_SKILL.get(scenario)
         if skill is not None:
             if not 1 <= skill <= 5:
@@ -282,6 +316,15 @@ class DoomEnv(gym.Env):
                 )
             except Exception:  # noqa: BLE001 — game var may be unavailable
                 info["final_health"] = None
+            for key, gv in EPISODE_METRIC_GAME_VARS.items():
+                # Cast via ``float`` first: ViZDoom returns every game
+                # variable as a double, even integer-valued ones like
+                # KILLCOUNT. Default to 0 so Monitor's info_keywords wiring
+                # always sees the key, even on malformed-state terminals.
+                try:
+                    info[key] = int(self.game.get_game_variable(gv))
+                except Exception:  # noqa: BLE001 — game var may be unavailable
+                    info[key] = 0
         return obs, reward, terminated, False, info
 
     def _classify_termination(self) -> str:
@@ -511,9 +554,15 @@ def make_sb3_env(
             # Seed the env deterministically per worker.
             env.reset(seed=seed + idx)
             if monitor_dir is not None:
+                # ``info_keywords`` tells Monitor to copy these keys from the
+                # terminal-step info dict into the per-episode CSV row, so
+                # downstream tooling can read the combat/exploration metrics
+                # straight from ``monitor_*.monitor.csv`` alongside
+                # reward/length without a second pass over the env.
                 env = Monitor(
                     env,
                     filename=str(Path(monitor_dir) / f"monitor_{idx}"),
+                    info_keywords=EPISODE_METRIC_KEYS,
                 )
             return env
 
