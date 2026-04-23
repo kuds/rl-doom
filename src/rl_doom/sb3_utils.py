@@ -855,19 +855,19 @@ def train_sb3(
         f"episode_{key}": episodes.get(key, np.array([]))
         for key in EPISODE_METRIC_KEYS
     }
-    np.savez(
-        metrics_dir / "training.npz",
-        episode_rewards=episodes.get("rewards", np.array([])),
-        episode_lengths=episodes.get("lengths", np.array([])),
+    savez_kwargs: dict[str, Any] = {
+        "episode_rewards": episodes.get("rewards", np.array([])),
+        "episode_lengths": episodes.get("lengths", np.array([])),
         # SB3 EvalCallback stores a 2-D (n_evals, n_eval_episodes) results
         # matrix; convert to the legacy 5-column (step, mean_r, std_r, mean_l,
         # std_l) layout that ``generate_summary.py`` consumes.
-        eval_rewards=_legacy_eval_log(evaluations),
-        wall_time_seconds=wall_time,
-        fps=fps,
-        total_env_steps=total_timesteps,
+        "eval_rewards": _legacy_eval_log(evaluations),
+        "wall_time_seconds": wall_time,
+        "fps": fps,
+        "total_env_steps": total_timesteps,
         **per_episode_metrics,
-    )
+    }
+    np.savez(metrics_dir / "training.npz", **savez_kwargs)
 
     learning_curves_path = figures_dir / "learning_curves.png"
     _plot_learning_curves(
