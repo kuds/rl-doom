@@ -48,6 +48,7 @@ from rl_doom.curriculum import (
     parse_curriculum_config,
 )
 from rl_doom.paths import mark_run_status, update_latest_symlink
+from rl_doom.scenario_limits import EPISODE_METRIC_KEYS
 
 # Algorithms that use a Generalized Advantage Estimation rollout buffer and
 # benefit from VecNormalize reward scaling. RecurrentPPO is the LSTM variant
@@ -240,15 +241,15 @@ class TerminationTracker(BaseCallback):
                 continue
             reason = info.get("termination_reason", "unknown")
             self.counts[reason] = self.counts.get(reason, 0) + 1
-            self.episodes.append(
-                {
-                    "step": int(self.num_timesteps),
-                    "reason": reason,
-                    "episode_tics": info.get("episode_tics"),
-                    "final_health": info.get("final_health"),
-                    "kills": info.get("kills"),
-                },
-            )
+            episode: dict[str, Any] = {
+                "step": int(self.num_timesteps),
+                "reason": reason,
+                "episode_tics": info.get("episode_tics"),
+                "final_health": info.get("final_health"),
+            }
+            for key in EPISODE_METRIC_KEYS:
+                episode[key] = info.get(key)
+            self.episodes.append(episode)
         return True
 
 
@@ -273,7 +274,8 @@ def _write_termination_report(
             writer = csv.DictWriter(
                 f,
                 fieldnames=[
-                    "step", "reason", "episode_tics", "final_health", "kills",
+                    "step", "reason", "episode_tics", "final_health",
+                    *EPISODE_METRIC_KEYS,
                 ],
             )
             writer.writeheader()
@@ -558,20 +560,20 @@ def _record_video(
         clip_path = out_path.with_name(f"{out_path.stem}_ep{ep + 1}{out_path.suffix}")
         written = _write_clip(frames, clip_path)
         video_paths.append(written)
-        # ``kills`` comes straight from KILLCOUNT on the terminating step
-        # (populated by ``DoomEnv.step``); default to 0 when the episode
-        # got truncated before termination so the JSON schema is stable.
-        kills = int(last_info.get("kills") or 0) if terminated else 0
-        episode_stats.append(
-            {
-                "episode": ep + 1,
-                "video": written.name,
-                "reward": round(total_reward, 4),
-                "length_steps": step,
-                "termination": termination,
-                "kills": kills,
-            },
-        )
+        # Per-episode combat/exploration metrics come straight from the
+        # terminal-step info dict (populated by ``DoomEnv.step``); default
+        # to 0 when the episode got truncated before termination so the
+        # JSON schema stays stable across rollouts.
+        entry: dict[str, Any] = {
+            "episode": ep + 1,
+            "video": written.name,
+            "reward": round(total_reward, 4),
+            "length_steps": step,
+            "termination": termination,
+        }
+        for key in EPISODE_METRIC_KEYS:
+            entry[key] = int(last_info.get(key) or 0) if terminated else 0
+        episode_stats.append(entry)
     env.close()
 
     # Single JSON summary describing every per-episode clip. Kept alongside
@@ -849,11 +851,14 @@ def train_sb3(
             ),
         )
 
+    per_episode_metrics = {
+        f"episode_{key}": episodes.get(key, np.array([]))
+        for key in EPISODE_METRIC_KEYS
+    }
     np.savez(
         metrics_dir / "training.npz",
         episode_rewards=episodes.get("rewards", np.array([])),
         episode_lengths=episodes.get("lengths", np.array([])),
-        episode_kills=episodes.get("kills", np.array([])),
         # SB3 EvalCallback stores a 2-D (n_evals, n_eval_episodes) results
         # matrix; convert to the legacy 5-column (step, mean_r, std_r, mean_l,
         # std_l) layout that ``generate_summary.py`` consumes.
@@ -861,6 +866,7 @@ def train_sb3(
         wall_time_seconds=wall_time,
         fps=fps,
         total_env_steps=total_timesteps,
+        **per_episode_metrics,
     )
 
     learning_curves_path = figures_dir / "learning_curves.png"
@@ -977,21 +983,26 @@ def _collect_episode_stats(monitor_dir: Path) -> dict[str, np.ndarray]:
 
     SB3's Monitor writes a single-line JSON header followed by a CSV
     (``r,l,t``), plus any extra columns configured via ``info_keywords``
-    (we pass ``kills`` so per-episode enemy-kill counts are captured
-    alongside reward/length). We append across workers in wall-clock order.
+    (we pass the full :data:`EPISODE_METRIC_KEYS` tuple so per-episode
+    combat/exploration counts are captured alongside reward/length).
+    We append across workers in wall-clock order. Older monitor CSVs
+    that predate a metric column are handled by defaulting the missing
+    cells to 0.
     """
     monitor_dir = Path(monitor_dir)
+    empty: dict[str, np.ndarray] = {
+        "rewards": np.array([]),
+        "lengths": np.array([]),
+    }
+    for key in EPISODE_METRIC_KEYS:
+        empty[key] = np.array([])
     files = sorted(monitor_dir.glob("monitor_*.monitor.csv"))
     if not files:
-        return {
-            "rewards": np.array([]),
-            "lengths": np.array([]),
-            "kills": np.array([]),
-        }
+        return empty
     rewards: list[float] = []
     lengths: list[int] = []
     timestamps: list[float] = []
-    kills: list[int] = []
+    metrics: dict[str, list[int]] = {key: [] for key in EPISODE_METRIC_KEYS}
     for path in files:
         with path.open() as f:
             # Skip the JSON header line.
@@ -1006,25 +1017,24 @@ def _collect_episode_stats(monitor_dir: Path) -> dict[str, np.ndarray]:
                     timestamps.append(float(row["t"]))
                 except (KeyError, TypeError, ValueError):
                     continue
-                # ``kills`` is optional — older monitor CSVs predate the
-                # info_keywords wiring, so treat a missing/blank cell as 0.
-                raw_kills = row.get("kills", "")
-                try:
-                    kills.append(int(float(raw_kills)) if raw_kills != "" else 0)
-                except (TypeError, ValueError):
-                    kills.append(0)
+                for key in EPISODE_METRIC_KEYS:
+                    raw = row.get(key, "")
+                    try:
+                        metrics[key].append(
+                            int(float(raw)) if raw not in ("", None) else 0,
+                        )
+                    except (TypeError, ValueError):
+                        metrics[key].append(0)
     if not timestamps:
-        return {
-            "rewards": np.array([]),
-            "lengths": np.array([]),
-            "kills": np.array([]),
-        }
+        return empty
     order: np.ndarray = np.argsort(timestamps)
-    return {
+    out: dict[str, np.ndarray] = {
         "rewards": np.asarray(rewards, dtype=np.float32)[order],
         "lengths": np.asarray(lengths, dtype=np.int64)[order],
-        "kills": np.asarray(kills, dtype=np.int64)[order],
     }
+    for key, values in metrics.items():
+        out[key] = np.asarray(values, dtype=np.int64)[order]
+    return out
 
 
 def _legacy_eval_log(evaluations: dict[str, np.ndarray]) -> np.ndarray:
