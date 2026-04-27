@@ -78,3 +78,44 @@ def test_rollout_many_steps_no_error() -> None:
                 env.reset()
     finally:
         env.close()
+
+
+def test_step_accepts_one_hot_action() -> None:
+    """The dreamerv3-torch onehot actor emits one-hot vectors, not ints."""
+    from rl_doom.dreamer_env import DreamerDoomEnv
+
+    env = DreamerDoomEnv(
+        scenario="defend_the_center", resize_shape=(64, 64), frame_skip=4, grayscale=False,
+    )
+    try:
+        env.reset()
+        n = env.action_space.n  # type: ignore[attr-defined]
+        one_hot = np.zeros(n, dtype=np.float32)
+        one_hot[0] = 1.0
+        obs, reward, is_last, info = env.step(one_hot)
+        assert isinstance(obs, dict)
+        assert isinstance(float(reward), float)
+        assert isinstance(is_last, bool)
+        assert isinstance(info, dict)
+    finally:
+        env.close()
+
+
+def test_id_changes_on_reset() -> None:
+    """``tools.simulate`` keys its episode cache by ``env.id``; each episode needs a fresh id."""
+    from rl_doom.dreamer_env import DreamerDoomEnv
+
+    env = DreamerDoomEnv(
+        scenario="defend_the_center", resize_shape=(64, 64), frame_skip=4, grayscale=False,
+    )
+    try:
+        first = env.id
+        env.reset()
+        second = env.id
+        env.reset()
+        third = env.id
+        assert isinstance(first, str) and first
+        assert second != first
+        assert third != second
+    finally:
+        env.close()

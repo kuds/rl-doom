@@ -1,0 +1,34 @@
+# Hyperparameters for DreamerV3 (NM512/dreamerv3-torch) on Deathmatch.
+# The hardest of the four scenarios — multi-enemy, navigation +
+# combat, requires map memory. We start with a low bot count so the
+# world model has a chance to converge before the env gets adversarial.
+# See DREAMER_PLAN.md §4 (deathmatch is "out of scope for the PoC" but
+# included here for parity with the PPO matrix; expect long training).
+
+scenario: deathmatch
+algorithm: dreamer
+seed: 42
+
+env:
+  resize_shape: [64, 64]
+  frame_skip: 4
+  grayscale: false
+  n_envs: 1
+  doom_skill: 3
+  num_bots: 4                   # start mild; deathmatch.cfg supports up to 8
+
+hyperparams:
+  preset: atari100k
+  batch_size: 16
+  batch_length: 64
+  train_ratio: 512
+  imag_horizon: 20              # longer horizon for navigation planning
+
+training:
+  total_timesteps: 1000000      # PPO uses 2.5M; Dreamer should be more
+                                # sample-efficient but harder ceiling
+  checkpoint_freq: 100000
+
+eval:
+  eval_freq: 50000
+  n_episodes: 5

@@ -1,0 +1,31 @@
+# Hyperparameters for DreamerV3 (NM512/dreamerv3-torch) on Basic.
+# Smallest scenario — single enemy, one room, ~50k step budget. Useful as a
+# fast end-to-end correctness check before promoting to defend_the_center.
+# See DREAMER_PLAN.md for the rationale on inheriting the atari100k preset.
+
+scenario: basic
+algorithm: dreamer
+seed: 42
+
+env:
+  resize_shape: [64, 64]        # Dreamer default; smaller than DQN/PPO 84x84
+  frame_skip: 4                 # action_repeat in dreamerv3-torch terms
+  grayscale: false              # Dreamer consumes RGB by default
+  n_envs: 1                     # port trains single-env; parallel needs extra plumbing
+  doom_skill: 3                 # ViZDoom difficulty (1..5); 3 = "Hurt me plenty"
+  num_bots: 0                   # ZDoom AI bots via addbot (deathmatch-only)
+
+hyperparams:
+  preset: atari100k             # dreamerv3-torch config preset to inherit
+  batch_size: 16
+  batch_length: 64
+  train_ratio: 512              # replay:env step ratio
+  imag_horizon: 15
+
+training:
+  total_timesteps: 50000        # matches ppo/dqn_basic budget
+  checkpoint_freq: 10000
+
+eval:
+  eval_freq: 5000
+  n_episodes: 5
