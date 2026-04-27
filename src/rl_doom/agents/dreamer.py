@@ -383,3 +383,293 @@ def _build_config(
     merged["scenario"] = scenario
 
     return _to_namespace(merged)
+
+
+# ---------------------------------------------------------------------------
+# Helpers — episode log scanning, video recording, plotting
+# ---------------------------------------------------------------------------
+
+
+def _scan_episode_npzs(directory: Path) -> tuple[list[float], list[int]]:
+    """Walk ``directory/*.npz`` and return per-episode reward sums + lengths.
+
+    ``tools.simulate`` writes one ``.npz`` per finished episode containing
+    arrays for ``reward``, ``image``, ``action``, etc. Length is
+    ``len(reward) - 1`` (the first row is the reset transition with reward 0).
+    """
+    import numpy as np
+
+    rewards: list[float] = []
+    lengths: list[int] = []
+    if not directory.exists():
+        return rewards, lengths
+    for path in sorted(directory.glob("*.npz")):
+        try:
+            with np.load(path) as ep:
+                r = ep["reward"]
+                rewards.append(float(np.sum(r)))
+                lengths.append(int(len(r) - 1))
+        except (OSError, KeyError, ValueError):
+            continue
+    return rewards, lengths
+
+
+def _read_metrics_jsonl(path: Path) -> dict[str, list[float]]:
+    """Parse ``tools.Logger``'s ``metrics.jsonl`` into per-key time series.
+
+    Each line is a JSON object ``{"step": <int>, "<key>": <float>, ...}``.
+    Returns ``{"step": [...], "<key>": [...], ...}`` with per-key arrays
+    aligned to whichever rows actually contained that key (so metrics with
+    different log cadences don't co-mingle).
+    """
+    import json
+
+    if not path.exists():
+        return {}
+    series: dict[str, list[tuple[float, float]]] = {}
+    with path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            step = float(row.get("step", 0))
+            for k, v in row.items():
+                if k == "step":
+                    continue
+                try:
+                    series.setdefault(k, []).append((step, float(v)))
+                except (TypeError, ValueError):
+                    continue
+    out: dict[str, list[float]] = {}
+    for k, pairs in series.items():
+        out[f"{k}__step"] = [p[0] for p in pairs]
+        out[k] = [p[1] for p in pairs]
+    return out
+
+
+def _synthesize_evaluations_npz(
+    eval_history: list[tuple[int, list[float], list[int]]],
+    out_path: Path,
+) -> None:
+    """Write an ``evaluations.npz`` matching SB3 ``EvalCallback``'s schema.
+
+    Each row in ``eval_history`` is ``(timestep, episode_rewards, episode_lengths)``
+    from one eval pass. We stack into the ``(timesteps, results, ep_lengths)``
+    layout :func:`rl_doom.sb3_utils._plot_eval_performance` and
+    :func:`rl_doom.summary.generate_run_summary` consume, so those functions
+    work unchanged on dreamer runs.
+    """
+    import numpy as np
+
+    if not eval_history:
+        return
+    timesteps = np.asarray([t for t, _r, _l in eval_history], dtype=np.int64)
+    n_evals = len(eval_history)
+    n_eps = max(len(r) for _t, r, _l in eval_history) or 1
+    results = np.zeros((n_evals, n_eps), dtype=np.float32)
+    ep_lengths = np.zeros((n_evals, n_eps), dtype=np.int64)
+    for i, (_t, r, le) in enumerate(eval_history):
+        for j, (rj, lj) in enumerate(zip(r, le)):
+            results[i, j] = float(rj)
+            ep_lengths[i, j] = int(lj)
+    np.savez(
+        out_path,
+        timesteps=timesteps,
+        results=results,
+        ep_lengths=ep_lengths,
+    )
+
+
+def _plot_dreamer_curves(
+    scenario: str,
+    episode_rewards: list[float],
+    episode_lengths: list[int],
+    metrics_path: Path,
+    out_path: Path,
+) -> None:
+    """Render a 2x3 learning-curves grid analogous to SB3's plotter.
+
+    Reads ``tools.Logger``'s ``metrics.jsonl`` (NOT SB3's progress.csv) so the
+    keys are dreamer-specific: ``kl_loss`` / ``model_loss`` / ``actor_ent`` /
+    ``value_loss`` / ``return_pred`` / ``image_loss``. Falls back to "not
+    logged" placeholders for keys missing from a particular run (e.g. early
+    runs that hit a crash before the first log flush).
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    series = _read_metrics_jsonl(metrics_path)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+
+    ep_r = np.asarray(episode_rewards, dtype=np.float32)
+    ep_l = np.asarray(episode_lengths, dtype=np.int64)
+
+    ax = axes[0, 0]
+    if ep_r.size:
+        ax.plot(ep_r, alpha=0.3, label="Raw")
+        if ep_r.size >= 20:
+            sm = np.convolve(ep_r, np.ones(20) / 20, mode="valid")
+            ax.plot(range(19, 19 + len(sm)), sm, label="MA-20")
+        ax.legend()
+    else:
+        ax.text(0.5, 0.5, "No episode data", ha="center", va="center",
+                transform=ax.transAxes)
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Reward")
+    ax.set_title(f"Episode Rewards - {scenario}")
+
+    ax = axes[0, 1]
+    if ep_l.size:
+        ax.plot(ep_l, alpha=0.3, color="green", label="Raw")
+        if ep_l.size >= 20:
+            sm = np.convolve(ep_l, np.ones(20) / 20, mode="valid")
+            ax.plot(range(19, 19 + len(sm)), sm, color="darkgreen", label="MA-20")
+        ax.legend()
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Steps")
+    ax.set_title("Episode Lengths")
+
+    panel_defs = [
+        ((0, 2), "model_loss", "Model Loss", "World Model Loss"),
+        ((1, 0), "kl_loss", "KL Loss", "Dynamics KL Loss"),
+        ((1, 1), "actor_ent", "Actor Entropy", "Policy Entropy"),
+        ((1, 2), "value_loss", "Value Loss", "Critic Loss"),
+    ]
+    for (r, c), key, ylabel, title in panel_defs:
+        ax = axes[r, c]
+        ys = series.get(key)
+        xs = series.get(f"{key}__step")
+        if ys and xs and len(ys) == len(xs):
+            ax.plot(xs, ys)
+        else:
+            ax.text(
+                0.5, 0.5, f"{key} not logged", ha="center", va="center",
+                transform=ax.transAxes, fontsize=9,
+            )
+        ax.set_xlabel("Env Steps")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _record_dreamer_video(
+    agent: Any,
+    scenario: str,
+    out_path: Path,
+    *,
+    fps: int,
+    n_episodes: int,
+    env_cfg: dict[str, Any],
+    max_steps: int = 5_000,
+) -> list[Path]:
+    """Drive a fresh ``DreamerDoomEnv`` greedily and write per-episode mp4s.
+
+    Mirrors the layout :func:`rl_doom.sb3_utils._record_video` produces — one
+    mp4 per rollout plus a single ``_episodes.json`` sidecar — so the
+    notebook display logic and ``generate_run_summary`` work unchanged.
+    """
+    import json
+
+    import imageio
+    import numpy as np
+
+    from rl_doom.dreamer_env import DreamerDoomEnv
+    from rl_doom.scenario_limits import EPISODE_METRIC_KEYS
+
+    env = DreamerDoomEnv(
+        scenario=scenario,
+        resize_shape=tuple(env_cfg.get("resize_shape", (64, 64))),
+        frame_skip=int(env_cfg.get("frame_skip", 4)),
+        grayscale=bool(env_cfg.get("grayscale", False)),
+        doom_skill=env_cfg.get("doom_skill"),
+        num_bots=int(env_cfg.get("num_bots", 0)),
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _write_clip(frames: list[np.ndarray], path: Path) -> Path:
+        try:
+            imageio.mimsave(path, frames, fps=fps)
+            return path
+        except Exception as exc:  # noqa: BLE001
+            fallback = path.with_suffix(".gif")
+            imageio.mimsave(fallback, frames, fps=fps, loop=0)
+            print(
+                f"[video] mp4 encode failed ({exc}); wrote GIF fallback: {fallback}"
+            )
+            return fallback
+
+    episode_stats: list[dict[str, Any]] = []
+    video_paths: list[Path] = []
+    for ep in range(max(n_episodes, 1)):
+        obs = env.reset()
+        # Drive the embedded ``_Dreamer`` in eval mode — single-env so we wrap
+        # values in a length-1 batch dim, matching ``tools.simulate``'s
+        # contract.
+        state = None
+        done = np.array([False])
+        frames: list[np.ndarray] = [obs["image"].copy()]
+        total_reward = 0.0
+        last_info: dict[str, Any] = {}
+        terminated = False
+        truncated = False
+        step = 0
+        while not done[0] and step < max_steps:
+            batched = {k: np.stack([obs[k]]) for k in obs}
+            action_dict, state = agent(batched, done, state, training=False)
+            action = action_dict["action"][0].detach().cpu().numpy()
+            obs, reward, is_last, last_info = env.step(action)
+            total_reward += float(reward)
+            frames.append(obs["image"].copy())
+            done = np.array([is_last])
+            terminated = bool(obs["is_terminal"])
+            truncated = bool(is_last and not terminated)
+            step += 1
+        if terminated:
+            termination = str(last_info.get("termination_reason", "unknown"))
+        elif truncated or step >= max_steps:
+            termination = "truncated"
+        else:
+            termination = "unknown"
+        clip_path = out_path.with_name(f"{out_path.stem}_ep{ep + 1}{out_path.suffix}")
+        written = _write_clip(frames, clip_path)
+        video_paths.append(written)
+        entry: dict[str, Any] = {
+            "episode": ep + 1,
+            "video": written.name,
+            "reward": round(total_reward, 4),
+            "length_steps": step,
+            "termination": termination,
+        }
+        for key in EPISODE_METRIC_KEYS:
+            entry[key] = int(last_info.get(key) or 0) if terminated else 0
+        episode_stats.append(entry)
+    env.close()
+
+    stats_path = out_path.with_name(out_path.stem + "_episodes.json")
+    stats_path.write_text(
+        json.dumps(
+            {
+                "fps": fps,
+                "env_config": {
+                    "scenario": scenario,
+                    "doom_skill": env_cfg.get("doom_skill"),
+                    "num_bots": int(env_cfg.get("num_bots", 0)),
+                    "resize_shape": list(env_cfg.get("resize_shape", (64, 64))),
+                    "frame_skip": int(env_cfg.get("frame_skip", 4)),
+                    "grayscale": bool(env_cfg.get("grayscale", False)),
+                },
+                "episodes": episode_stats,
+            },
+            indent=4,
+        )
+        + "\n",
+    )
+    return video_paths
