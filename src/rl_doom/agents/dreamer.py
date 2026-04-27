@@ -272,3 +272,114 @@ class _Damy:
 
     def reset(self) -> Any:
         return lambda: self._env.reset()
+
+
+# ---------------------------------------------------------------------------
+# Config builder
+# ---------------------------------------------------------------------------
+
+
+# Doom-specific config overrides applied *after* the upstream preset merge.
+# These are bits that don't make sense to expose as YAML knobs because they're
+# fixed by our env adapter (e.g. ``num_actions`` is set later from the env's
+# action space) or by the integration architecture (single env, custom task
+# tag, etc.). Kept as a module-level constant so tests can introspect them.
+_DOOM_FIXED_OVERRIDES: dict[str, Any] = {
+    "task": "doom_custom",          # we don't use upstream's make_env, so the
+                                    # task suite tag is informational only.
+    "envs": 1,                      # single in-process env (see DREAMER_PLAN.md).
+    "parallel": False,              # never spawn upstream's Parallel workers.
+    "offline_traindir": "",         # online learning only.
+    "offline_evaldir": "",
+    "compile": False,               # ``torch.compile`` is brittle on Colab L4
+                                    # + our env's small obs; default off so the
+                                    # PoC trains predictably. YAML can override.
+    "video_pred_log": False,        # off by default — saves VRAM and speeds up
+                                    # eval on Colab; YAML can opt back in.
+    "expl_behavior": "greedy",      # match atari100k preset.
+}
+
+
+def _build_config(
+    *,
+    port_path: str | Path,
+    scenario: str,
+    env_cfg: dict[str, Any],
+    hyperparams: dict[str, Any],
+    eval_cfg: dict[str, Any],
+    training_cfg: dict[str, Any],
+    seed: int,
+    device: str,
+    logdir: str | Path,
+) -> SimpleNamespace:
+    """Assemble the SimpleNamespace config the embedded ``_Dreamer`` consumes.
+
+    Merge order (later wins):
+        upstream ``configs.yaml:defaults``
+        upstream ``configs.yaml:<preset>``           (default ``atari100k``)
+        our YAML's ``hyperparams`` block               (model / training knobs)
+        Doom-specific fixed overrides                  (:data:`_DOOM_FIXED_OVERRIDES`)
+        per-call overrides                             (logdir, seed, device, total_timesteps, …)
+
+    The returned object has attribute access (``cfg.batch_size``) the same way
+    upstream's argparse-built config does, so the embedded ``_Dreamer`` and the
+    ``models``/``tools`` modules consume it without modification.
+    """
+    cfg_yaml = _load_port_configs(port_path)
+    merged: dict[str, Any] = {}
+    _recursive_update(merged, cfg_yaml.get("defaults", {}))
+
+    preset = hyperparams.get("preset", "atari100k")
+    if preset not in cfg_yaml:
+        available = sorted(k for k in cfg_yaml if k != "defaults")
+        raise ValueError(
+            f"Unknown dreamer preset {preset!r}; available presets in "
+            f"upstream configs.yaml: {available}",
+        )
+    _recursive_update(merged, cfg_yaml[preset])
+
+    # YAML hyperparams are the user's tuning surface. Strip ``preset`` since
+    # it's a meta-key consumed above, not a Dreamer config field.
+    user_hp = {k: v for k, v in hyperparams.items() if k != "preset"}
+    _recursive_update(merged, user_hp)
+
+    # Doom-fixed overrides last so YAML can't accidentally re-enable
+    # ``parallel`` etc.
+    _recursive_update(merged, _DOOM_FIXED_OVERRIDES)
+
+    # Image size: take from env_cfg.resize_shape, default 64x64 (matches the
+    # atari100k preset). Upstream stores ``size`` as a 2-tuple ``(H, W)``.
+    resize = env_cfg.get("resize_shape", [64, 64])
+    merged["size"] = tuple(resize)
+    merged["grayscale"] = bool(env_cfg.get("grayscale", False))
+    merged["action_repeat"] = int(env_cfg.get("frame_skip", 4))
+
+    # Per-call wiring: total_timesteps -> ``steps``, paths, seed, device.
+    total_timesteps = int(training_cfg.get("total_timesteps", merged.get("steps", 1e6)))
+    merged["steps"] = total_timesteps
+    merged["eval_every"] = int(eval_cfg.get("eval_freq", merged.get("eval_every", 10000)))
+    merged["eval_episode_num"] = int(
+        eval_cfg.get("n_episodes", merged.get("eval_episode_num", 5)),
+    )
+    merged["seed"] = int(seed)
+    merged["device"] = str(device)
+    logdir = Path(logdir)
+    merged["logdir"] = str(logdir)
+    merged["traindir"] = str(logdir / "train_eps")
+    merged["evaldir"] = str(logdir / "eval_eps")
+
+    # ``time_limit`` is in env steps for the upstream codepath; ViZDoom
+    # scenarios already have an in-engine episode timeout, so set a generous
+    # ceiling unless the user overrode it. Mirrors atari100k preset (108k).
+    merged.setdefault("time_limit", 108000)
+
+    # ``num_actions`` is filled in by ``train_dreamer`` after the env is
+    # built — included here as a sentinel so ``models.WorldModel`` doesn't
+    # explode if anything tries to read it before that.
+    merged.setdefault("num_actions", 0)
+
+    # Tag the scenario for run-artefact provenance. The embedded Dreamer
+    # never reads this field; it's purely informational.
+    merged["scenario"] = scenario
+
+    return _to_namespace(merged)
