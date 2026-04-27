@@ -98,3 +98,177 @@ def _recursive_update(base: dict[str, Any], update: dict[str, Any]) -> None:
 def _to_namespace(d: dict[str, Any]) -> SimpleNamespace:
     """Convert the merged config dict to ``SimpleNamespace`` (attr access)."""
     return SimpleNamespace(**d)
+
+
+# ---------------------------------------------------------------------------
+# Embedded ``_Dreamer`` nn.Module (re-implemented from the port's dreamer.py)
+# ---------------------------------------------------------------------------
+#
+# We deliberately do **not** import the upstream's ``dreamer`` module: it
+# imports ``envs.wrappers`` (which pulls in legacy ``gym``) and ``ruamel.yaml``
+# at module load time. Since the actual ``Dreamer`` class is just glue around
+# ``models.WorldModel`` + ``models.ImagBehavior`` + the exploration heads — all
+# of which live in modules with clean dependencies — we re-embed the class
+# verbatim here. Locked to UPSTREAM_PIN; tracked manually if we ever bump.
+
+
+def _build_dreamer_class(port: dict[str, ModuleType]) -> type:
+    """Construct the embedded ``_Dreamer`` nn.Module class once the port is imported.
+
+    The class needs ``models``, ``tools``, and ``exploration`` references at
+    class-definition time, which we don't have until ``_import_port`` runs.
+    Building it inside a factory keeps the import order honest (and means the
+    module stays importable on machines without the port checked out).
+    """
+    import numpy as np
+    import torch
+    from torch import nn
+
+    models_mod = port["models"]
+    tools_mod = port["tools"]
+    expl_mod = port["exploration"]
+
+    def _to_np(x: Any) -> Any:
+        return x.detach().cpu().numpy()
+
+    class _Dreamer(nn.Module):  # noqa: D401 — verbatim from upstream
+        """Embedded copy of ``dreamerv3-torch.dreamer.Dreamer``.
+
+        Pinned to UPSTREAM_PIN. Only edits vs upstream:
+        * imports come from the captured ``port`` dict (rather than module-level
+          ``import models`` etc.) so this works without modifying ``sys.path``
+          a second time;
+        * ``_to_np`` is local rather than module-level.
+        """
+
+        def __init__(self, obs_space, act_space, config, logger, dataset):
+            super().__init__()
+            self._config = config
+            self._logger = logger
+            self._should_log = tools_mod.Every(config.log_every)
+            batch_steps = config.batch_size * config.batch_length
+            self._should_train = tools_mod.Every(batch_steps / config.train_ratio)
+            self._should_pretrain = tools_mod.Once()
+            self._should_reset = tools_mod.Every(config.reset_every)
+            self._should_expl = tools_mod.Until(
+                int(config.expl_until / config.action_repeat),
+            )
+            self._metrics: dict[str, Any] = {}
+            self._step = logger.step // config.action_repeat
+            self._update_count = 0
+            self._dataset = dataset
+            self._wm = models_mod.WorldModel(obs_space, act_space, self._step, config)
+            self._task_behavior = models_mod.ImagBehavior(config, self._wm)
+            import os as _os
+            if config.compile and _os.name != "nt":
+                self._wm = torch.compile(self._wm)
+                self._task_behavior = torch.compile(self._task_behavior)
+            reward = lambda f, s, a: self._wm.heads["reward"](f).mean()
+            self._expl_behavior = dict(
+                greedy=lambda: self._task_behavior,
+                random=lambda: expl_mod.Random(config, act_space),
+                plan2explore=lambda: expl_mod.Plan2Explore(config, self._wm, reward),
+            )[config.expl_behavior]().to(self._config.device)
+
+        def __call__(self, obs, reset, state=None, training=True):
+            step = self._step
+            if training:
+                steps = (
+                    self._config.pretrain
+                    if self._should_pretrain()
+                    else self._should_train(step)
+                )
+                for _ in range(steps):
+                    self._train(next(self._dataset))
+                    self._update_count += 1
+                    self._metrics["update_count"] = self._update_count
+                if self._should_log(step):
+                    for name, values in self._metrics.items():
+                        self._logger.scalar(name, float(np.mean(values)))
+                        self._metrics[name] = []
+                    if self._config.video_pred_log:
+                        openl = self._wm.video_pred(next(self._dataset))
+                        self._logger.video("train_openl", _to_np(openl))
+                    self._logger.write(fps=True)
+
+            policy_output, state = self._policy(obs, state, training)
+
+            if training:
+                self._step += len(reset)
+                self._logger.step = self._config.action_repeat * self._step
+            return policy_output, state
+
+        def _policy(self, obs, state, training):
+            if state is None:
+                latent = action = None
+            else:
+                latent, action = state
+            obs = self._wm.preprocess(obs)
+            embed = self._wm.encoder(obs)
+            latent, _ = self._wm.dynamics.obs_step(
+                latent, action, embed, obs["is_first"],
+            )
+            if self._config.eval_state_mean:
+                latent["stoch"] = latent["mean"]
+            feat = self._wm.dynamics.get_feat(latent)
+            if not training:
+                actor = self._task_behavior.actor(feat)
+                action = actor.mode()
+            elif self._should_expl(self._step):
+                actor = self._expl_behavior.actor(feat)
+                action = actor.sample()
+            else:
+                actor = self._task_behavior.actor(feat)
+                action = actor.sample()
+            logprob = actor.log_prob(action)
+            latent = {k: v.detach() for k, v in latent.items()}
+            action = action.detach()
+            if self._config.actor["dist"] == "onehot_gumble":
+                action = torch.one_hot(
+                    torch.argmax(action, dim=-1), self._config.num_actions,
+                )
+            policy_output = {"action": action, "logprob": logprob}
+            state = (latent, action)
+            return policy_output, state
+
+        def _train(self, data):
+            metrics: dict[str, Any] = {}
+            post, context, mets = self._wm._train(data)
+            metrics.update(mets)
+            start = post
+            reward = lambda f, s, a: self._wm.heads["reward"](
+                self._wm.dynamics.get_feat(s),
+            ).mode()
+            metrics.update(self._task_behavior._train(start, reward)[-1])
+            if self._config.expl_behavior != "greedy":
+                mets = self._expl_behavior.train(start, context, data)[-1]
+                metrics.update({"expl_" + key: value for key, value in mets.items()})
+            for name, value in metrics.items():
+                if name not in self._metrics:
+                    self._metrics[name] = [value]
+                else:
+                    self._metrics[name].append(value)
+
+    return _Dreamer
+
+
+class _Damy:
+    """Re-implementation of upstream's ``parallel.Damy`` shim.
+
+    ``tools.simulate`` calls ``env.step(a)`` / ``env.reset()`` and treats the
+    return value as a *thunk* it then invokes (so a parallel-process backend
+    can do the work async). For a single in-process env we just wrap the call
+    so ``simulate`` can call the result with no args.
+    """
+
+    def __init__(self, env: Any) -> None:
+        self._env = env
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._env, name)
+
+    def step(self, action: Any) -> Any:
+        return lambda: self._env.step(action)
+
+    def reset(self) -> Any:
+        return lambda: self._env.reset()
