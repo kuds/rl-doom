@@ -1,0 +1,33 @@
+# Hyperparameters for DreamerV3 (NM512/dreamerv3-torch) on Deadly Corridor.
+# This is the scenario where Dreamer's RSSM should outshine PPO's frame
+# stacking — long corridor, enemies leaving FOV, sparse reward. We bump
+# the imagination horizon slightly to let the agent plan further ahead
+# than the atari100k default (15 -> 20). See DREAMER_PLAN.md §4 / §6.
+
+scenario: deadly_corridor
+algorithm: dreamer
+seed: 42
+
+env:
+  resize_shape: [64, 64]
+  frame_skip: 4
+  grayscale: false
+  n_envs: 1
+  doom_skill: 3
+  num_bots: 0
+
+hyperparams:
+  preset: atari100k
+  batch_size: 16
+  batch_length: 64
+  train_ratio: 512
+  imag_horizon: 20              # longer horizon — corridor needs lookahead
+
+training:
+  total_timesteps: 500000       # half of PPO's 1M budget; Dreamer is more
+                                # sample-efficient on this regime
+  checkpoint_freq: 50000
+
+eval:
+  eval_freq: 25000
+  n_episodes: 5
