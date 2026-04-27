@@ -224,7 +224,15 @@ def _build_dreamer_class(port: dict[str, ModuleType]) -> type:
             latent = {k: v.detach() for k, v in latent.items()}
             action = action.detach()
             if self._config.actor["dist"] == "onehot_gumble":
-                action = torch.one_hot(
+                # Upstream writes ``torch.one_hot(...)`` here, which is a
+                # typo — the real API is ``torch.nn.functional.one_hot``,
+                # so the upstream code would crash at runtime if this
+                # branch ever fired. We never configure
+                # ``actor.dist == "onehot_gumble"`` (atari100k preset uses
+                # plain ``"onehot"``), so this is dead code in practice;
+                # we use the correct API anyway in case a downstream user
+                # opts into Gumbel-softmax via YAML.
+                action = torch.nn.functional.one_hot(
                     torch.argmax(action, dim=-1), self._config.num_actions,
                 )
             policy_output = {"action": action, "logprob": logprob}
@@ -907,9 +915,9 @@ def train_dreamer(
     _synthesize_evaluations_npz(eval_history, evaluations_path)
 
     # Build training.npz in train_sb3's schema so generate_run_summary works.
-    eval_log = np.empty((0, 5), dtype=np.float32)
+    eval_log: np.ndarray = np.empty((0, 5), dtype=np.float32)
     if eval_history:
-        rows = []
+        rows: list[list[float]] = []
         for ts, rs, ls in eval_history:
             r_arr = np.asarray(rs, dtype=np.float32)
             l_arr = np.asarray(ls, dtype=np.float32)
@@ -938,8 +946,10 @@ def train_dreamer(
         learning_curves_path,
     )
     if eval_history:
-        evaluations_dict = {
-            "timesteps": np.asarray([t for t, _r, _l in eval_history], dtype=np.int64),
+        evaluations_dict: dict[str, np.ndarray] = {
+            "timesteps": np.asarray(
+                [t for t, _r, _l in eval_history], dtype=np.int64,
+            ),
             "results": np.asarray(
                 [r for _t, r, _l in eval_history], dtype=np.float32,
             ),
