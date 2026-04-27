@@ -163,7 +163,7 @@ def _build_dreamer_class(port: dict[str, ModuleType]) -> type:
             if config.compile and _os.name != "nt":
                 self._wm = torch.compile(self._wm)
                 self._task_behavior = torch.compile(self._task_behavior)
-            reward = lambda f, s, a: self._wm.heads["reward"](f).mean()
+            reward = lambda f, s, a: self._wm.heads["reward"](f).mean()  # noqa: E731
             self._expl_behavior = dict(
                 greedy=lambda: self._task_behavior,
                 random=lambda: expl_mod.Random(config, act_space),
@@ -236,7 +236,7 @@ def _build_dreamer_class(port: dict[str, ModuleType]) -> type:
             post, context, mets = self._wm._train(data)
             metrics.update(mets)
             start = post
-            reward = lambda f, s, a: self._wm.heads["reward"](
+            reward = lambda f, s, a: self._wm.heads["reward"](  # noqa: E731
                 self._wm.dynamics.get_feat(s),
             ).mode()
             metrics.update(self._task_behavior._train(start, reward)[-1])
@@ -673,3 +673,316 @@ def _record_dreamer_video(
         + "\n",
     )
     return video_paths
+
+
+# ---------------------------------------------------------------------------
+# Public training entry point
+# ---------------------------------------------------------------------------
+
+
+def _make_dreamer_env(scenario: str, env_cfg: dict[str, Any]) -> Any:
+    """Build a single ``DreamerDoomEnv`` from the YAML env block."""
+    from rl_doom.dreamer_env import DreamerDoomEnv
+
+    return DreamerDoomEnv(
+        scenario=scenario,
+        resize_shape=tuple(env_cfg.get("resize_shape", (64, 64))),
+        frame_skip=int(env_cfg.get("frame_skip", 4)),
+        grayscale=bool(env_cfg.get("grayscale", False)),
+        doom_skill=env_cfg.get("doom_skill"),
+        num_bots=int(env_cfg.get("num_bots", 0)),
+    )
+
+
+def train_dreamer(
+    *,
+    scenario: str,
+    run_dir: str | Path,
+    total_timesteps: int,
+    hyperparams: dict[str, Any],
+    env_cfg: dict[str, Any],
+    eval_cfg: dict[str, Any] | None = None,
+    training_cfg: dict[str, Any] | None = None,
+    port_path: str | Path,
+    seed: int = 42,
+    device: str | None = None,
+    record_video: bool = True,
+    video_episodes: int = 5,
+    video_fps: int = 20,
+    on_complete: Any = None,
+) -> dict[str, Any]:
+    """Train a DreamerV3 agent end-to-end and write *all* artefacts now.
+
+    Mirrors :func:`rl_doom.sb3_utils.train_sb3`'s signature/return shape so
+    notebook code stays uniform across PPO/DQN/Dreamer.
+
+    On return ``run_dir`` contains:
+    * ``checkpoints/{latest.pt, final.pt}`` — upstream's checkpoint format
+    * ``metrics/training.npz`` — episode-aligned arrays + synthesized
+      ``eval_rewards`` 5-column matrix (matches train_sb3's schema)
+    * ``metrics/evaluations.npz`` — synthesized to match SB3's
+      ``EvalCallback`` schema so the SB3 eval plotter / summary work
+    * ``metrics/metrics.jsonl`` — written by upstream's ``tools.Logger``
+    * ``figures/{learning_curves.png, eval_performance.png}``
+    * ``media/dreamer_<scenario>_ep<N>.mp4`` + ``_episodes.json`` sidecar
+    * ``tensorboard/`` event files
+    * ``stage_summary.txt`` via ``rl_doom.summary.generate_run_summary``
+    """
+    import functools
+
+    import numpy as np
+    import torch
+
+    from rl_doom.paths import mark_run_status, update_latest_symlink
+    from rl_doom.sb3_utils import _plot_eval_performance
+    from rl_doom.summary import generate_run_summary
+
+    eval_cfg = dict(eval_cfg or {})
+    training_cfg = dict(training_cfg or {})
+    training_cfg.setdefault("total_timesteps", total_timesteps)
+
+    run_dir = Path(run_dir)
+    tb_dir = run_dir / "tensorboard"
+    metrics_dir = run_dir / "metrics"
+    figures_dir = run_dir / "figures"
+    media_dir = run_dir / "media"
+    ckpt_dir = run_dir / "checkpoints"
+    for d in (tb_dir, metrics_dir, figures_dir, media_dir, ckpt_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    if device is None:
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    port = _import_port(port_path)
+    tools_mod = port["tools"]
+    cfg = _build_config(
+        port_path=port_path,
+        scenario=scenario,
+        env_cfg=env_cfg,
+        hyperparams=hyperparams,
+        eval_cfg=eval_cfg,
+        training_cfg=training_cfg,
+        seed=seed,
+        device=device,
+        logdir=tb_dir,
+    )
+    Path(cfg.traindir).mkdir(parents=True, exist_ok=True)
+    Path(cfg.evaldir).mkdir(parents=True, exist_ok=True)
+
+    tools_mod.set_seed_everywhere(cfg.seed)
+
+    train_env_inner = _make_dreamer_env(scenario, env_cfg)
+    eval_env_inner = _make_dreamer_env(scenario, env_cfg)
+    cfg.num_actions = int(train_env_inner.action_space.n)
+
+    train_envs = [_Damy(train_env_inner)]
+    eval_envs = [_Damy(eval_env_inner)]
+
+    logger = tools_mod.Logger(tb_dir, 0)
+
+    # --- prefill ---------------------------------------------------------
+    train_eps: dict[str, Any] = {}
+    eval_eps: dict[str, Any] = {}
+
+    prefill_steps = max(0, int(getattr(cfg, "prefill", 0)))
+    if prefill_steps:
+        random_actor = tools_mod.OneHotDist(
+            torch.zeros(cfg.num_actions).repeat(cfg.envs, 1),
+        )
+
+        def random_agent(o: Any, d: Any, s: Any) -> tuple[dict[str, Any], None]:
+            action = random_actor.sample()
+            logprob = random_actor.log_prob(action)
+            return {"action": action, "logprob": logprob}, None
+
+        print(f"[dreamer] prefilling {prefill_steps} random env steps")
+        tools_mod.simulate(
+            random_agent,
+            train_envs,
+            train_eps,
+            cfg.traindir,
+            logger,
+            limit=cfg.dataset_size,
+            steps=prefill_steps,
+        )
+        logger.step += prefill_steps * cfg.action_repeat
+
+    # --- agent -----------------------------------------------------------
+    train_dataset = tools_mod.from_generator(
+        tools_mod.sample_episodes(train_eps, cfg.batch_length), cfg.batch_size,
+    )
+
+    DreamerCls = _build_dreamer_class(port)
+    agent = DreamerCls(
+        train_envs[0].observation_space,
+        train_envs[0].action_space,
+        cfg,
+        logger,
+        train_dataset,
+    ).to(cfg.device)
+    agent.requires_grad_(requires_grad=False)
+
+    latest_ckpt = ckpt_dir / "latest.pt"
+    if latest_ckpt.exists():
+        ckpt = torch.load(latest_ckpt, map_location=cfg.device)
+        agent.load_state_dict(ckpt["agent_state_dict"])
+        tools_mod.recursively_load_optim_state_dict(
+            agent, ckpt["optims_state_dict"],
+        )
+        agent._should_pretrain._once = False
+
+    # --- train loop ------------------------------------------------------
+    eval_history: list[tuple[int, list[float], list[int]]] = []
+    state = None
+    t_start_wall = __import__("time").time()
+    while agent._step < cfg.steps + cfg.eval_every:
+        logger.write()
+        if cfg.eval_episode_num > 0:
+            print(f"[dreamer] eval @ step {agent._step}")
+            eval_policy = functools.partial(agent, training=False)
+            tools_mod.simulate(
+                eval_policy,
+                eval_envs,
+                eval_eps,
+                cfg.evaldir,
+                logger,
+                is_eval=True,
+                episodes=cfg.eval_episode_num,
+            )
+            eval_rewards, eval_lengths = _scan_episode_npzs(Path(cfg.evaldir))
+            recent_r = eval_rewards[-cfg.eval_episode_num:]
+            recent_l = eval_lengths[-cfg.eval_episode_num:]
+            if recent_r:
+                eval_history.append(
+                    (int(agent._step * cfg.action_repeat), recent_r, recent_l),
+                )
+
+        next_target = min(agent._step + cfg.eval_every, cfg.steps)
+        print(f"[dreamer] train @ step {agent._step} -> {next_target}")
+        state = tools_mod.simulate(
+            agent,
+            train_envs,
+            train_eps,
+            cfg.traindir,
+            logger,
+            limit=cfg.dataset_size,
+            steps=cfg.eval_every,
+            state=state,
+        )
+        torch.save(
+            {
+                "agent_state_dict": agent.state_dict(),
+                "optims_state_dict": tools_mod.recursively_collect_optim_state_dict(
+                    agent,
+                ),
+            },
+            latest_ckpt,
+        )
+
+    wall_time = __import__("time").time() - t_start_wall
+
+    # --- close envs (best-effort) ---------------------------------------
+    for env in train_envs + eval_envs:
+        try:
+            env.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # --- save final checkpoint ------------------------------------------
+    final_ckpt = ckpt_dir / "final.pt"
+    torch.save(
+        {
+            "agent_state_dict": agent.state_dict(),
+            "optims_state_dict": tools_mod.recursively_collect_optim_state_dict(agent),
+        },
+        final_ckpt,
+    )
+
+    # --- aggregate per-episode stats ------------------------------------
+    train_rewards, train_lengths = _scan_episode_npzs(Path(cfg.traindir))
+
+    # Synthesise the SB3-shaped evaluations.npz so the existing eval plotter
+    # and summary code work without a fork.
+    evaluations_path = metrics_dir / "evaluations.npz"
+    _synthesize_evaluations_npz(eval_history, evaluations_path)
+
+    # Build training.npz in train_sb3's schema so generate_run_summary works.
+    eval_log = np.empty((0, 5), dtype=np.float32)
+    if eval_history:
+        rows = []
+        for ts, rs, ls in eval_history:
+            r_arr = np.asarray(rs, dtype=np.float32)
+            l_arr = np.asarray(ls, dtype=np.float32)
+            rows.append([
+                float(ts), float(r_arr.mean()), float(r_arr.std()),
+                float(l_arr.mean()), float(l_arr.std()),
+            ])
+        eval_log = np.asarray(rows, dtype=np.float32)
+
+    fps = float(cfg.steps / wall_time) if wall_time > 0 else 0.0
+    np.savez(
+        metrics_dir / "training.npz",
+        episode_rewards=np.asarray(train_rewards, dtype=np.float32),
+        episode_lengths=np.asarray(train_lengths, dtype=np.int64),
+        eval_rewards=eval_log,
+        wall_time_seconds=np.float64(wall_time),
+        fps=np.float64(fps),
+        total_env_steps=np.int64(cfg.steps),
+    )
+
+    # --- learning curves + eval figure ----------------------------------
+    learning_curves_path = figures_dir / "learning_curves.png"
+    _plot_dreamer_curves(
+        scenario, train_rewards, train_lengths,
+        tb_dir / "metrics.jsonl",
+        learning_curves_path,
+    )
+    if eval_history:
+        evaluations_dict = {
+            "timesteps": np.asarray([t for t, _r, _l in eval_history], dtype=np.int64),
+            "results": np.asarray(
+                [r for _t, r, _l in eval_history], dtype=np.float32,
+            ),
+            "ep_lengths": np.asarray(
+                [le for _t, _r, le in eval_history], dtype=np.int64,
+            ),
+        }
+        _plot_eval_performance(
+            "dreamer", scenario, evaluations_dict,
+            figures_dir / "eval_performance.png",
+        )
+
+    # --- video -----------------------------------------------------------
+    video_paths: list[Path] = []
+    if record_video:
+        video_paths = _record_dreamer_video(
+            agent,
+            scenario,
+            media_dir / f"dreamer_{scenario}.mp4",
+            fps=video_fps,
+            n_episodes=video_episodes,
+            env_cfg=env_cfg,
+        )
+
+    # --- finalise --------------------------------------------------------
+    mark_run_status(run_dir, status="completed")
+    update_latest_symlink(scenario, "dreamer", run_dir)
+    (run_dir / "stage_summary.txt").write_text(generate_run_summary(run_dir))
+
+    final_eval_mean = float(eval_log[-1, 1]) if eval_log.shape[0] else None
+    best_eval_mean = float(eval_log[:, 1].max()) if eval_log.shape[0] else None
+    result: dict[str, Any] = {
+        "run_dir": run_dir,
+        "wall_time_seconds": wall_time,
+        "fps": fps,
+        "mean_eval_reward": final_eval_mean,
+        "best_eval_reward": best_eval_mean,
+        "video_paths": video_paths,
+        "learning_curves_path": learning_curves_path,
+    }
+    if on_complete is not None:
+        try:
+            on_complete(run_dir)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[train_dreamer] on_complete hook raised: {exc}")
+    return result
