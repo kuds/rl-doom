@@ -38,10 +38,19 @@ dev = [
     "pre-commit",
 ]
 dreamer = [
-    # DreamerV3 PyTorch port. Upstream is research code with no tagged
-    # releases; pin to a specific commit SHA on first install and record it
-    # here. See DREAMER_PLAN.md §5.1 / §8.
-    "dreamerv3-torch @ git+https://github.com/NM512/dreamerv3-torch@main",
+    # The DreamerV3 PyTorch port (NM512/dreamerv3-torch) is research code
+    # with no setup.py / pyproject.toml, so it cannot be installed as a
+    # Python package. The notebook ``git clones`` it and adds the checkout
+    # to ``sys.path`` (see ``notebooks/06_dreamer_training.ipynb``). The
+    # commit SHA pin lives in ``rl_doom.agents.dreamer.UPSTREAM_PIN`` so
+    # the notebook and the agent wrapper can never disagree.
+    #
+    # The port's ``models.py``, ``networks.py``, ``tools.py``, and
+    # ``exploration.py`` only depend on packages already in our base
+    # install (``torch``, ``numpy``, ``tensorboard``); we deliberately
+    # bypass ``dreamer.py`` (which pulls in ``ruamel.yaml`` + the legacy
+    # ``gym`` package via ``envs.wrappers``) by re-implementing its thin
+    # ``Dreamer`` nn.Module driver inline in ``rl_doom.agents.dreamer``.
 ]
 
 [tool.setuptools.packages.find]

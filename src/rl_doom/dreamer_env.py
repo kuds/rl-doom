@@ -8,14 +8,18 @@ several ways:
   (not Gymnasium's 5-tuple).
 * Observations are a ``dict`` with an ``image`` key (uint8 RGB by default)
   plus ``is_first`` / ``is_terminal`` bool flags.
-* Discrete actions are consumed as one-hot vectors via the port's own
-  ``OneHotAction`` wrapper, so we still expose a ``Discrete`` action space.
+* The port's actor emits **one-hot** actions for discrete tasks, so
+  ``step`` must accept either an int index or a one-hot vector.
+* ``tools.simulate`` keys its episode cache by ``env.id``, so each env
+  instance needs a unique ``id`` attribute.
 
-See ``DREAMER_PLAN.md`` §3 and §5.2 for the rationale.
+See ``DREAMER_PLAN.md`` §3 / §5.2 for the rationale.
 """
 
 from __future__ import annotations
 
+import datetime
+import uuid
 from typing import Any
 
 import gymnasium as gym
@@ -77,6 +81,16 @@ class DreamerDoomEnv:
             }
         )
         self.action_space = self._env.action_space
+        # ``tools.simulate`` keys its per-episode cache by ``env.id`` and
+        # writes one .npz per id when an episode finishes. Mirror the
+        # upstream port's UUID wrapper format (timestamp + hex) so episode
+        # filenames sort chronologically.
+        self.id = self._make_id()
+
+    @staticmethod
+    def _make_id() -> str:
+        """Return a fresh ``YYYYMMDDTHHMMSS-<hex>`` id matching the port's UUID wrapper."""
+        return f"{datetime.datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex}"
 
     # ------------------------------------------------------------------
 
@@ -103,12 +117,32 @@ class DreamerDoomEnv:
             "is_terminal": np.bool_(is_terminal),
         }
 
+    @staticmethod
+    def _to_index(action: Any) -> int:
+        """Coerce the port's one-hot action vector (or a raw int) to an index.
+
+        DreamerV3's ``onehot`` actor emits a 1-D ``(num_actions,)`` numpy
+        array (or torch tensor that's already been ``.cpu().numpy()``-ed by
+        ``tools.simulate``). Discrete envs expect a Python int. We accept
+        either form so callers can drive this env with raw ints in tests
+        without going through the port's actor pipeline.
+        """
+        arr = np.asarray(action)
+        if arr.ndim == 0:
+            return int(arr.item())
+        return int(np.argmax(arr))
+
     def reset(self) -> dict[str, Any]:
+        # Refresh the id on every episode start so ``tools.simulate``'s
+        # per-episode cache writes a fresh .npz instead of clobbering the
+        # previous one. Matches the upstream ``UUID`` wrapper's behaviour.
+        self.id = self._make_id()
         obs, _info = self._env.reset()
         return self._obs_dict(obs, is_first=True, is_terminal=False)
 
-    def step(self, action: int) -> tuple[dict[str, Any], float, bool, dict[str, Any]]:
-        obs, reward, terminated, truncated, info = self._env.step(int(action))
+    def step(self, action: Any) -> tuple[dict[str, Any], float, bool, dict[str, Any]]:
+        idx = self._to_index(action)
+        obs, reward, terminated, truncated, info = self._env.step(idx)
         is_last = bool(terminated or truncated)
         # Dreamer distinguishes ``is_last`` (episode ended) from
         # ``is_terminal`` (absorbing state, i.e. "real" termination not a
