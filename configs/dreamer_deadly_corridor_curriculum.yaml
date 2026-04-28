@@ -1,0 +1,70 @@
+# DreamerV3 on Deadly Corridor with a 3-stage skill curriculum (1 -> 2 -> 3).
+#
+# Pair with ``configs/dreamer_deadly_corridor.yaml`` (the fixed-skill-3
+# baseline) so a notebook or matrix run produces a "curriculum" and a
+# "baseline" directory side-by-side under
+# ``training_jobs/deadly_corridor/dreamer/runs/``. Identical hyperparameters
+# keep the comparison apples-to-apples; the only difference is the
+# ``curriculum:`` block at the bottom of this file.
+#
+# Curriculum-on-Dreamer caveats (worth flagging on the first run):
+#
+# * The RSSM keeps a recurrent latent across episodes. When the difficulty
+#   knob flips mid-run, the world model's learned dynamics for "easy"
+#   enemies are momentarily wrong, so eval reward typically dips for a
+#   handful of evals after each promotion before recovering. This is
+#   expected — not a bug.
+# * Dreamer trains on far fewer env steps than PPO (the world model
+#   imagination amortises rollouts), so the budget here is half of the
+#   PPO-curriculum YAML.
+
+scenario: deadly_corridor
+algorithm: dreamer
+seed: 42
+
+env:
+  # n_envs is intentionally NOT exposed for dreamer — the upstream port
+  # trains single-env and its train_ratio is calibrated for that.
+  resize_shape: [64, 64]
+  frame_skip: 4
+  grayscale: false
+  # doom_skill is deliberately unset: the curriculum's first stage
+  # (skill 1) is applied at training start via the controller.
+  num_bots: 0
+
+hyperparams:
+  preset: atari100k
+  batch_size: 16
+  batch_length: 64
+  train_ratio: 512
+  imag_horizon: 20              # longer horizon — corridor needs lookahead
+
+training:
+  total_timesteps: 1000000      # 2x the baseline budget; curriculum gives
+                                # the world model more time to relearn
+                                # dynamics across the two skill flips
+  checkpoint_freq: 100000
+
+eval:
+  eval_freq: 25000
+  n_episodes: 5
+
+# Skill curriculum.
+#
+# Thresholds match the PPO-curriculum YAML so the skill-up cadence is
+# comparable across algorithms. ``promote_at`` is the raw eval mean
+# reward; the skill-3 baseline hits ~1700-2300 when the policy actually
+# completes the corridor, so 1500 is the "consistently reaches the vest"
+# bar before stepping up.
+#
+# min_evals_between_promotions=2 prevents a single lucky eval from
+# jumping a stage; the controller waits for at least two eval windows
+# above threshold before promoting.
+curriculum:
+  enabled: true
+  min_evals_between_promotions: 2
+  sync_eval_env: true
+  stages:
+    - {skill: 1, promote_at: 1500.0}
+    - {skill: 2, promote_at: 1500.0}
+    - {skill: 3, promote_at: null}   # terminal stage

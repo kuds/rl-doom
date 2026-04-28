@@ -229,13 +229,6 @@ def _run_one(
         # DreamerV3 has its own training driver (different replay/loss/eval
         # plumbing than SB3) — dispatch to ``train_dreamer`` and let it write
         # the same artefact layout so the matrix CSV consumer doesn't care.
-        if curriculum_cfg:
-            print(
-                f"[matrix:{matrix_name}] WARNING: curriculum specified for "
-                f"dreamer variant {variant_name!r} but dreamer's training "
-                f"loop does not yet integrate SkillCurriculumCallback — "
-                f"running with the first stage's settings only.",
-            )
         from rl_doom.agents.dreamer import train_dreamer
 
         result = train_dreamer(
@@ -250,6 +243,7 @@ def _run_one(
             seed=seed,
             device=device,
             record_video=True,
+            curriculum=curriculum_cfg,
         )
     else:
         result = train_sb3(

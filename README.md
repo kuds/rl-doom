@@ -144,18 +144,23 @@ Paired "baseline vs. curriculum" YAMLs live under `configs/`:
 | Deadly Corridor | `ppo_deadly_corridor.yaml` | `ppo_deadly_corridor_curriculum.yaml` (skill) |
 | Deadly Corridor | `dqn_deadly_corridor.yaml` | `dqn_deadly_corridor_curriculum.yaml` (skill) |
 | Deadly Corridor | `recurrent_ppo_deadly_corridor.yaml` | `recurrent_ppo_deadly_corridor_curriculum.yaml` (skill) |
+| Deadly Corridor | `dreamer_deadly_corridor.yaml` | `dreamer_deadly_corridor_curriculum.yaml` (skill) |
 | Deathmatch | `ppo_deathmatch.yaml` | `ppo_deathmatch_curriculum.yaml` (num_bots) |
 | Deathmatch | `dqn_deathmatch.yaml` | `dqn_deathmatch_curriculum.yaml` (num_bots) |
 | Deathmatch | `recurrent_ppo_deathmatch.yaml` | `recurrent_ppo_deathmatch_curriculum.yaml` (num_bots) |
+| Deathmatch | `dreamer_deathmatch.yaml` | `dreamer_deathmatch_curriculum.yaml` (num_bots) |
 
-Under the hood, `SkillCurriculumCallback`
-(`src/rl_doom/curriculum.py`) watches the SB3 `EvalCallback` and, when
-the eval mean clears the current stage's `promote_at`, applies the new
-stage's knobs: `DoomGame.set_doom_skill` for `skill` changes and a
-direct write to `DoomEnv._num_bots` for `num_bots` changes (the latter
-takes effect on the next `reset()` because `addbot` commands are
-re-issued per episode). The promotion timeline is saved to
-`metrics/curriculum.json` and logged to TensorBoard as
+Under the hood, the schedule lives in `CurriculumController`
+(`src/rl_doom/curriculum.py`) — a framework-agnostic state machine
+that owns the stage list and the promotion logic. Two adapters drive
+it: `SkillCurriculumCallback` for the SB3-based agents (DQN / PPO /
+Recurrent PPO) and `train_dreamer`'s eval block for DreamerV3. When
+the eval mean clears the current stage's `promote_at`, the new
+stage's knobs are applied: `DoomGame.set_doom_skill` for `skill`
+changes and a direct write to `DoomEnv._num_bots` for `num_bots`
+changes (the latter takes effect on the next `reset()` because
+`addbot` commands are re-issued per episode). The promotion timeline
+is saved to `metrics/curriculum.json` and logged to TensorBoard as
 `curriculum/skill`, `curriculum/num_bots`, `curriculum/stage_index`.
 
 ## Experiment Matrix Runner

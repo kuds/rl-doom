@@ -17,11 +17,13 @@ import pytest
 pytest.importorskip("stable_baselines3")
 
 from rl_doom.curriculum import (  # noqa: E402 — import after skip guard
+    CurriculumController,
     CurriculumStage,
     SkillCurriculumCallback,
     _iter_inner_envs,
     _set_num_bots_on_vec_env,
     _set_skill_on_vec_env,
+    apply_stage_to_doom_env,
     parse_curriculum_config,
 )
 
@@ -497,3 +499,157 @@ def test_combined_skill_and_num_bots_stage_applies_both() -> None:
     assert train._num_bots == 8
     assert eval_env.game.skill == 3
     assert eval_env._num_bots == 8
+
+
+# ---------------------------------------------------------------------------
+# CurriculumController — framework-agnostic state machine
+# ---------------------------------------------------------------------------
+
+
+def test_controller_record_initial_returns_first_stage_and_logs_entry() -> None:
+    stages = [
+        CurriculumStage(skill=1, promote_at=40.0),
+        CurriculumStage(skill=2, promote_at=None),
+    ]
+    ctl = CurriculumController(stages)
+    initial = ctl.record_initial()
+    assert initial == stages[0]
+    assert ctl.promotions == [
+        {
+            "step": 0,
+            "skill": 1,
+            "num_bots": None,
+            "trigger": "initial",
+            "eval_mean_reward": None,
+        },
+    ]
+    assert ctl.current_stage_index == 0
+    assert ctl.is_terminal is False
+
+
+def test_controller_promotes_when_threshold_cleared() -> None:
+    stages = [
+        CurriculumStage(skill=1, promote_at=40.0),
+        CurriculumStage(skill=2, promote_at=60.0),
+        CurriculumStage(skill=3, promote_at=None),
+    ]
+    ctl = CurriculumController(stages)
+    ctl.record_initial()
+
+    # Below threshold — no promotion.
+    assert ctl.maybe_promote(current_step=1000, eval_mean_reward=20.0) is None
+    assert ctl.current_stage_index == 0
+
+    # Above threshold — promotes to stage 2 (skill=2).
+    new = ctl.maybe_promote(current_step=2000, eval_mean_reward=55.0)
+    assert new is not None
+    assert new.skill == 2
+    assert ctl.current_stage_index == 1
+    assert ctl.promotions[-1]["trigger"] == "promotion"
+    assert ctl.promotions[-1]["eval_mean_reward"] == 55.0
+    assert ctl.promotions[-1]["step"] == 2000
+
+
+def test_controller_min_gap_blocks_rapid_double_promotion() -> None:
+    stages = [
+        CurriculumStage(skill=1, promote_at=40.0),
+        CurriculumStage(skill=2, promote_at=None),
+    ]
+    ctl = CurriculumController(stages, min_evals_between_promotions=2)
+    ctl.record_initial()
+
+    # First eval clears threshold but min_gap=2 blocks promotion.
+    assert ctl.maybe_promote(current_step=1000, eval_mean_reward=50.0) is None
+    assert ctl.current_stage_index == 0
+
+    # Second eval over threshold actually promotes.
+    new = ctl.maybe_promote(current_step=2000, eval_mean_reward=50.0)
+    assert new is not None
+    assert ctl.current_stage_index == 1
+
+
+def test_controller_terminal_stage_never_promotes() -> None:
+    stages = [
+        CurriculumStage(skill=1, promote_at=10.0),
+        CurriculumStage(skill=2, promote_at=None),
+    ]
+    ctl = CurriculumController(stages)
+    ctl.record_initial()
+
+    # First eval promotes to terminal.
+    ctl.maybe_promote(current_step=1000, eval_mean_reward=100.0)
+    assert ctl.is_terminal is True
+
+    # Subsequent evals are no-ops; promotion list keeps only one
+    # promotion entry (plus the initial).
+    assert ctl.maybe_promote(current_step=2000, eval_mean_reward=9999.0) is None
+    promotions = [p for p in ctl.promotions if p["trigger"] == "promotion"]
+    assert len(promotions) == 1
+
+
+def test_controller_describe_stage_formats_both_knobs() -> None:
+    ctl = CurriculumController(
+        [CurriculumStage(skill=2, num_bots=4, promote_at=None)],
+    )
+    assert ctl.describe_stage() == "skill=2 num_bots=4"
+
+
+def test_controller_rejects_empty_stage_list() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        CurriculumController([])
+
+
+# ---------------------------------------------------------------------------
+# apply_stage_to_doom_env — single-env helper used by train_dreamer
+# ---------------------------------------------------------------------------
+
+
+def test_apply_stage_to_doom_env_sets_skill_through_wrapper_chain() -> None:
+    raw = _FakeDoomEnv()
+    wrapped = _FakeWrapper(_FakeWrapper(raw))
+    apply_stage_to_doom_env(wrapped, CurriculumStage(skill=3, promote_at=None))
+    assert raw.game.skill == 3
+    assert raw._doom_skill == 3
+
+
+def test_apply_stage_to_doom_env_sets_num_bots() -> None:
+    class _BotEnv:
+        def __init__(self) -> None:
+            self._num_bots = 0
+
+    raw = _BotEnv()
+    wrapped = _FakeWrapper(raw)
+    apply_stage_to_doom_env(wrapped, CurriculumStage(num_bots=5, promote_at=None))
+    assert raw._num_bots == 5
+
+
+def test_apply_stage_to_doom_env_combined_stage_sets_both_knobs() -> None:
+    class _Both(_FakeDoomEnv):
+        def __init__(self) -> None:
+            super().__init__()
+            self._num_bots = 0
+
+    raw = _Both()
+    wrapped = _FakeWrapper(_FakeWrapper(raw))
+    apply_stage_to_doom_env(
+        wrapped, CurriculumStage(skill=2, num_bots=4, promote_at=None),
+    )
+    assert raw.game.skill == 2
+    assert raw._num_bots == 4
+
+
+def test_apply_stage_to_doom_env_no_op_when_env_lacks_attribute() -> None:
+    """Applying a num_bots stage to a non-deathmatch env (no _num_bots) is fine."""
+
+    class _SkillOnlyEnv:
+        def __init__(self) -> None:
+            self.game = _FakeGame()
+
+    env = _SkillOnlyEnv()
+    # Should not raise even though env has no _num_bots field.
+    apply_stage_to_doom_env(env, CurriculumStage(num_bots=4, promote_at=None))
+    # And the skill knob in a combined stage still applies.
+    apply_stage_to_doom_env(
+        env, CurriculumStage(skill=3, num_bots=4, promote_at=None),
+    )
+    assert env.game.skill == 3
