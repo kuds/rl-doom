@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import gymnasium as gym
 import numpy as np
 import pytest
@@ -99,6 +101,72 @@ def test_step_accepts_one_hot_action() -> None:
         assert isinstance(info, dict)
     finally:
         env.close()
+
+
+def test_timeout_does_not_set_is_terminal() -> None:
+    """ViZDoom's scenario timeout should be ``is_last=True, is_terminal=False``.
+
+    ``DoomEnv.step`` folds the timeout into ``terminated=True`` (it never sets
+    ``truncated``), distinguishing the cause only via ``info["termination_reason"]``.
+    The dreamer adapter must consult that flag — otherwise the world model
+    learns that clock-runout is an absorbing terminal state.
+    """
+    from rl_doom.dreamer_env import DreamerDoomEnv
+
+    class _StubInner:
+        def __init__(self) -> None:
+            from gymnasium.spaces import Box, Discrete
+
+            self.action_space = Discrete(3)
+            self.observation_space = Box(0, 255, (84, 84), dtype=np.uint8)
+            self._fake_image = np.zeros((84, 84), dtype=np.uint8)
+
+        def step(self, _action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+            return self._fake_image, 0.0, True, False, {"termination_reason": "timeout"}
+
+        def reset(self) -> tuple[Any, dict[str, Any]]:
+            return self._fake_image, {}
+
+        def close(self) -> None:
+            pass
+
+    env = DreamerDoomEnv.__new__(DreamerDoomEnv)
+    env._env = _StubInner()  # type: ignore[attr-defined]
+    env._img_shape = (84, 84, 1)  # type: ignore[attr-defined]
+    env._grayscale = True  # type: ignore[attr-defined]
+    obs, _reward, is_last, _info = env.step(0)
+    assert is_last is True, "timeout should still mark episode end"
+    assert bool(obs["is_terminal"]) is False, "timeout must not be flagged as terminal"
+
+
+def test_death_sets_is_terminal() -> None:
+    """Real terminations (death / goal_reached) must keep ``is_terminal=True``."""
+    from rl_doom.dreamer_env import DreamerDoomEnv
+
+    class _StubInner:
+        def __init__(self) -> None:
+            from gymnasium.spaces import Box, Discrete
+
+            self.action_space = Discrete(3)
+            self.observation_space = Box(0, 255, (84, 84), dtype=np.uint8)
+            self._fake_image = np.zeros((84, 84), dtype=np.uint8)
+
+        def step(self, _action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+            return self._fake_image, -1.0, True, False, {"termination_reason": "death"}
+
+        def reset(self) -> tuple[Any, dict[str, Any]]:
+            return self._fake_image, {}
+
+        def close(self) -> None:
+            pass
+
+    env = DreamerDoomEnv.__new__(DreamerDoomEnv)
+    env._env = _StubInner()  # type: ignore[attr-defined]
+    env._img_shape = (84, 84, 1)  # type: ignore[attr-defined]
+    env._grayscale = True  # type: ignore[attr-defined]
+    obs, _reward, is_last, _info = env.step(0)
+    assert is_last is True
+    assert bool(obs["is_terminal"]) is True
 
 
 def test_id_changes_on_reset() -> None:

@@ -137,3 +137,34 @@ def test_expand_variants_requires_base_config(tmp_path: Path) -> None:
                 "variants": [{"name": "nope"}],
             },
         )
+
+
+# ---------------------------------------------------------------------------
+# _resolve_dreamer_port_path — env var + fallback chain
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_dreamer_port_path_uses_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``DREAMERV3_TORCH_PATH`` should win over the ``/content`` and ``~`` fallbacks."""
+    matrix = _load_matrix_module()
+    explicit = tmp_path / "custom_port"
+    explicit.mkdir()
+    monkeypatch.setenv("DREAMERV3_TORCH_PATH", str(explicit))
+    assert matrix._resolve_dreamer_port_path() == explicit
+
+
+def test_resolve_dreamer_port_path_falls_back_when_nothing_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """When no candidate exists, return the last candidate so train_dreamer can
+    surface a friendly clone-this-repo error rather than a confusing path error."""
+    matrix = _load_matrix_module()
+    # Point env var at a non-existent dir; ``/content`` and ``~/dreamerv3-torch``
+    # are also expected not to exist on a typical CI runner.
+    monkeypatch.setenv("DREAMERV3_TORCH_PATH", str(tmp_path / "nope"))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    result = matrix._resolve_dreamer_port_path()
+    # Last-resort fallback is ``Path.home() / "dreamerv3-torch"``.
+    assert result == tmp_path / "dreamerv3-torch"

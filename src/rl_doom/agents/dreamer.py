@@ -287,24 +287,47 @@ class _Damy:
 # ---------------------------------------------------------------------------
 
 
-# Doom-specific config overrides applied *after* the upstream preset merge.
-# These are bits that don't make sense to expose as YAML knobs because they're
-# fixed by our env adapter (e.g. ``num_actions`` is set later from the env's
-# action space) or by the integration architecture (single env, custom task
-# tag, etc.). Kept as a module-level constant so tests can introspect them.
-_DOOM_FIXED_OVERRIDES: dict[str, Any] = {
+# Doom-specific config overrides split into two layers:
+#
+# * :data:`_DOOM_HARD_OVERRIDES` — locked by the integration architecture; user
+#   YAML cannot reach these without breaking the adapter (e.g. ``envs > 1``
+#   would race against our single in-process ViZDoom process).
+# * :data:`_DOOM_DEFAULT_OVERRIDES` — Doom-friendly defaults that user YAML
+#   *can* override. Applied *before* the user's ``hyperparams`` block so a YAML
+#   knob like ``video_pred_log: true`` (to inspect imagined rollouts) or
+#   ``expl_behavior: plan2explore`` (for sparse-reward scenarios like
+#   ``deadly_corridor``) actually takes effect.
+#
+# Kept as module-level constants so tests can introspect them.
+_DOOM_HARD_OVERRIDES: dict[str, Any] = {
     "task": "doom_custom",          # we don't use upstream's make_env, so the
                                     # task suite tag is informational only.
     "envs": 1,                      # single in-process env (see DREAMER_PLAN.md).
     "parallel": False,              # never spawn upstream's Parallel workers.
     "offline_traindir": "",         # online learning only.
     "offline_evaldir": "",
+}
+
+_DOOM_DEFAULT_OVERRIDES: dict[str, Any] = {
     "compile": False,               # ``torch.compile`` is brittle on Colab L4
                                     # + our env's small obs; default off so the
-                                    # PoC trains predictably. YAML can override.
+                                    # PoC trains predictably. Override in YAML
+                                    # if the environment is known-good.
     "video_pred_log": False,        # off by default — saves VRAM and speeds up
-                                    # eval on Colab; YAML can opt back in.
-    "expl_behavior": "greedy",      # match atari100k preset.
+                                    # eval on Colab. Flip on in YAML to inspect
+                                    # the world model's imagined rollouts.
+    "expl_behavior": "greedy",      # match atari100k preset. Override to
+                                    # ``plan2explore`` for sparse-reward
+                                    # scenarios (see DREAMER_PLAN.md §2).
+}
+
+# Back-compat alias: the union of both override layers, mirroring the
+# pre-split behaviour for callers (mostly tests) that want to inspect "every
+# Doom-side config knob the wrapper sets". Reads only — mutating it doesn't
+# affect ``_build_config``.
+_DOOM_FIXED_OVERRIDES: dict[str, Any] = {
+    **_DOOM_DEFAULT_OVERRIDES,
+    **_DOOM_HARD_OVERRIDES,
 }
 
 
@@ -325,8 +348,9 @@ def _build_config(
     Merge order (later wins):
         upstream ``configs.yaml:defaults``
         upstream ``configs.yaml:<preset>``           (default ``atari100k``)
+        Doom-specific *defaults*                       (:data:`_DOOM_DEFAULT_OVERRIDES`)
         our YAML's ``hyperparams`` block               (model / training knobs)
-        Doom-specific fixed overrides                  (:data:`_DOOM_FIXED_OVERRIDES`)
+        Doom-specific *hard locks*                     (:data:`_DOOM_HARD_OVERRIDES`)
         per-call overrides                             (logdir, seed, device, total_timesteps, …)
 
     The returned object has attribute access (``cfg.batch_size``) the same way
@@ -346,14 +370,17 @@ def _build_config(
         )
     _recursive_update(merged, cfg_yaml[preset])
 
+    # Doom defaults *before* user YAML so a knob like ``video_pred_log: true``
+    # in the user's YAML can flip the default off->on.
+    _recursive_update(merged, _DOOM_DEFAULT_OVERRIDES)
+
     # YAML hyperparams are the user's tuning surface. Strip ``preset`` since
     # it's a meta-key consumed above, not a Dreamer config field.
     user_hp = {k: v for k, v in hyperparams.items() if k != "preset"}
     _recursive_update(merged, user_hp)
 
-    # Doom-fixed overrides last so YAML can't accidentally re-enable
-    # ``parallel`` etc.
-    _recursive_update(merged, _DOOM_FIXED_OVERRIDES)
+    # Hard locks last so YAML can't accidentally re-enable ``parallel`` etc.
+    _recursive_update(merged, _DOOM_HARD_OVERRIDES)
 
     # Image size: take from env_cfg.resize_shape, default 64x64 (matches the
     # atari100k preset). Upstream stores ``size`` as a 2-tuple ``(H, W)``.
@@ -364,8 +391,17 @@ def _build_config(
 
     # Per-call wiring: total_timesteps -> ``steps``, paths, seed, device.
     total_timesteps = int(training_cfg.get("total_timesteps", merged.get("steps", 1e6)))
-    merged["steps"] = total_timesteps
-    merged["eval_every"] = int(eval_cfg.get("eval_freq", merged.get("eval_every", 10000)))
+    eval_every = int(eval_cfg.get("eval_freq", merged.get("eval_every", 10000)))
+    merged["eval_every"] = eval_every
+    # The training loop runs while ``agent._step < cfg.steps + cfg.eval_every``
+    # so a final eval pass triggers — that overshoots ``total_timesteps`` by
+    # one eval chunk (e.g. budget=50k, eval_every=5k -> ~55k env steps).
+    # Subtract eval_every from ``steps`` here so total env interaction
+    # (prefill + agent-driven training) lands at ``total_timesteps`` ± one
+    # ``eval_every`` chunk — well below the unfixed 10% drift on small budgets.
+    # Floor at ``eval_every`` so degenerate ``total_timesteps <= eval_every``
+    # configs (smoke tests) still run a complete training cycle.
+    merged["steps"] = max(eval_every, total_timesteps - eval_every)
     merged["eval_episode_num"] = int(
         eval_cfg.get("n_episodes", merged.get("eval_episode_num", 5)),
     )
