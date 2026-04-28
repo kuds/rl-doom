@@ -117,8 +117,8 @@ def test_timeout_does_not_set_is_terminal() -> None:
         def __init__(self) -> None:
             from gymnasium.spaces import Box, Discrete
 
-            self.action_space = Discrete(3)
-            self.observation_space = Box(0, 255, (84, 84), dtype=np.uint8)
+            self.action_space: Any = Discrete(3)
+            self.observation_space: Any = Box(0, 255, (84, 84), dtype=np.uint8)
             self._fake_image = np.zeros((84, 84), dtype=np.uint8)
 
         def step(self, _action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
@@ -130,10 +130,13 @@ def test_timeout_does_not_set_is_terminal() -> None:
         def close(self) -> None:
             pass
 
-    env = DreamerDoomEnv.__new__(DreamerDoomEnv)
-    env._env = _StubInner()  # type: ignore[attr-defined]
-    env._img_shape = (84, 84, 1)  # type: ignore[attr-defined]
-    env._grayscale = True  # type: ignore[attr-defined]
+    # Bypass ``DreamerDoomEnv.__init__`` (which would build a real ViZDoom
+    # process) and inject the stub directly. ``env: Any`` silences mypy
+    # complaints about overwriting the typed ``_env`` attribute.
+    env: Any = DreamerDoomEnv.__new__(DreamerDoomEnv)
+    env._env = _StubInner()
+    env._img_shape = (84, 84, 1)
+    env._grayscale = True
     obs, _reward, is_last, _info = env.step(0)
     assert is_last is True, "timeout should still mark episode end"
     assert bool(obs["is_terminal"]) is False, "timeout must not be flagged as terminal"
@@ -147,8 +150,8 @@ def test_death_sets_is_terminal() -> None:
         def __init__(self) -> None:
             from gymnasium.spaces import Box, Discrete
 
-            self.action_space = Discrete(3)
-            self.observation_space = Box(0, 255, (84, 84), dtype=np.uint8)
+            self.action_space: Any = Discrete(3)
+            self.observation_space: Any = Box(0, 255, (84, 84), dtype=np.uint8)
             self._fake_image = np.zeros((84, 84), dtype=np.uint8)
 
         def step(self, _action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
@@ -160,10 +163,10 @@ def test_death_sets_is_terminal() -> None:
         def close(self) -> None:
             pass
 
-    env = DreamerDoomEnv.__new__(DreamerDoomEnv)
-    env._env = _StubInner()  # type: ignore[attr-defined]
-    env._img_shape = (84, 84, 1)  # type: ignore[attr-defined]
-    env._grayscale = True  # type: ignore[attr-defined]
+    env: Any = DreamerDoomEnv.__new__(DreamerDoomEnv)
+    env._env = _StubInner()
+    env._img_shape = (84, 84, 1)
+    env._grayscale = True
     obs, _reward, is_last, _info = env.step(0)
     assert is_last is True
     assert bool(obs["is_terminal"]) is True
