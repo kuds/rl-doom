@@ -1,9 +1,17 @@
 """Curriculum learning for ViZDoom scenarios.
 
-Provides :class:`SkillCurriculumCallback`, a Stable-Baselines3 callback that
-monitors an :class:`~stable_baselines3.common.callbacks.EvalCallback` and
-promotes one or both of two difficulty knobs whenever the eval mean reward
-clears a per-stage threshold:
+Provides three layers, smallest first:
+
+* :class:`CurriculumStage` — one rung of the schedule (skill / num_bots /
+  promote_at threshold).
+* :class:`CurriculumController` — framework-agnostic state machine that
+  owns the stage list, the "evals since last promotion" counter, and the
+  promotion timeline. Used directly by :func:`rl_doom.agents.dreamer.train_dreamer`.
+* :class:`SkillCurriculumCallback` — Stable-Baselines3 callback that wraps a
+  ``CurriculumController`` and plumbs its decisions into SB3's
+  ``EvalCallback`` lifecycle (used by DQN / PPO / Recurrent PPO).
+
+Two difficulty knobs are supported:
 
 * ``doom_skill`` — ViZDoom's 1..5 monster-AI aggressiveness setting.
   Used by scenarios where enemies are pre-placed monsters
@@ -33,13 +41,13 @@ Design notes:
 * ``num_bots`` changes take effect on the next ``reset()`` because
   :class:`rl_doom.env.DoomEnv` re-issues ``addbot`` commands after
   each ``new_episode``; the active episode keeps its original count.
-* Relies on the public ``EvalCallback`` attributes
+* SB3 path: relies on the public ``EvalCallback`` attributes
   ``evaluations_timesteps`` and ``last_mean_reward``, so the callback
   must be registered **after** the ``EvalCallback`` in the callback
   list (SB3 fires callbacks in registration order).
-* Propagates changes to both the training vec env and the eval vec
-  env (via the attached ``EvalCallback``) so the promotion threshold
-  is measured on the same difficulty the agent is training on.
+* Both paths propagate changes to the eval env in lock-step with the
+  training env (controlled by ``sync_eval_env``) so the promotion
+  threshold is measured on the same difficulty the agent is training on.
 """
 
 from __future__ import annotations
@@ -149,6 +157,174 @@ def parse_curriculum_config(cfg: dict[str, Any] | None) -> list[CurriculumStage]
     return stages
 
 
+class CurriculumController:
+    """Framework-agnostic curriculum state machine.
+
+    Owns the stage list, the current rung, the per-rung eval counter, and
+    the promotion timeline. Knows nothing about envs or training frameworks
+    — callers wire env mutations themselves (via :func:`apply_stage_to_doom_env`
+    for single envs or the SB3 vec-env walkers below).
+
+    Two-step usage:
+
+    1. Call :meth:`record_initial` once before training to take the starting
+       stage and append the ``trigger="initial"`` entry to ``promotions``.
+    2. Call :meth:`maybe_promote` after each completed eval pass; if the
+       returned stage is non-None, apply it to your envs.
+
+    The state machine is entirely deterministic: each ``maybe_promote`` call
+    consumes one eval, increments the rung counter, and may advance the
+    stage index by at most one. ``min_evals_between_promotions`` blocks
+    rapid double-promotion on a single lucky rollout.
+    """
+
+    def __init__(
+        self,
+        stages: list[CurriculumStage],
+        *,
+        min_evals_between_promotions: int = 1,
+    ) -> None:
+        if not stages:
+            raise ValueError("stages must be non-empty")
+        self._stages = stages
+        self._idx = 0
+        self._min_gap = max(1, int(min_evals_between_promotions))
+        self._evals_since_promotion = 0
+        # Public, append-only — written for the JSON timeline that
+        # ``rl_doom.summary`` and the matrix CSV consume.
+        self.promotions: list[dict[str, Any]] = []
+
+    @property
+    def current_stage(self) -> CurriculumStage:
+        return self._stages[self._idx]
+
+    @property
+    def current_skill(self) -> int | None:
+        return self.current_stage.skill
+
+    @property
+    def current_num_bots(self) -> int | None:
+        return self.current_stage.num_bots
+
+    @property
+    def current_stage_index(self) -> int:
+        return self._idx
+
+    @property
+    def num_stages(self) -> int:
+        return len(self._stages)
+
+    @property
+    def is_terminal(self) -> bool:
+        return self._idx >= len(self._stages) - 1
+
+    @property
+    def evals_since_promotion(self) -> int:
+        return self._evals_since_promotion
+
+    def record_initial(self) -> CurriculumStage:
+        """Append the initial entry to ``promotions`` and return the starting stage.
+
+        Callers should immediately apply the returned stage to both the
+        training and eval envs (initial application always propagates to
+        the eval env regardless of ``sync_eval_env``).
+        """
+        self.promotions.append(self._promotion_entry(trigger="initial", mean_r=None, step=0))
+        return self.current_stage
+
+    def maybe_promote(
+        self, *, current_step: int, eval_mean_reward: float,
+    ) -> CurriculumStage | None:
+        """Process a fresh eval result.
+
+        Returns the new stage if a promotion fired, otherwise ``None``.
+        Callers are responsible for applying the returned stage to envs
+        (and for deciding whether to sync the eval env in non-initial
+        promotions, via their own ``sync_eval_env`` semantics).
+        """
+        self._evals_since_promotion += 1
+        if self.is_terminal:
+            return None
+        threshold = self._stages[self._idx].promote_at
+        # ``parse_curriculum_config`` enforces that non-terminal stages
+        # set a threshold, but guard anyway so callers passing raw
+        # CurriculumStage lists don't trip an assertion error.
+        if threshold is None:
+            return None
+        if eval_mean_reward >= threshold and self._evals_since_promotion >= self._min_gap:
+            self._idx += 1
+            self._evals_since_promotion = 0
+            self.promotions.append(
+                self._promotion_entry(
+                    trigger="promotion",
+                    mean_r=float(eval_mean_reward),
+                    step=int(current_step),
+                ),
+            )
+            return self.current_stage
+        return None
+
+    def describe_stage(self, stage: CurriculumStage | None = None) -> str:
+        """Format ``skill=X num_bots=Y`` for log lines."""
+        stage = stage if stage is not None else self.current_stage
+        parts: list[str] = []
+        if stage.skill is not None:
+            parts.append(f"skill={stage.skill}")
+        if stage.num_bots is not None:
+            parts.append(f"num_bots={stage.num_bots}")
+        return " ".join(parts) or "<empty stage>"
+
+    def _promotion_entry(
+        self, *, trigger: str, mean_r: float | None, step: int,
+    ) -> dict[str, Any]:
+        stage = self.current_stage
+        return {
+            "step": int(step),
+            "skill": stage.skill,
+            "num_bots": stage.num_bots,
+            "trigger": trigger,
+            "eval_mean_reward": mean_r,
+        }
+
+
+def apply_stage_to_doom_env(doom_env: Any, stage: CurriculumStage) -> None:
+    """Apply ``stage``'s knobs to a single DoomEnv (or a Gym wrapper around one).
+
+    Walks ``.env`` until it hits something exposing ``game`` (skill path)
+    or ``_num_bots`` (bot-count path). No-ops on stage knobs the env
+    doesn't support — e.g. applying a ``num_bots`` stage to a non-deathmatch
+    DoomEnv just leaves the field unset.
+
+    Used by :func:`rl_doom.agents.dreamer.train_dreamer` to update the wrapped
+    DreamerDoomEnv (and its eval twin) without going through SB3's vec-env
+    machinery.
+    """
+    base = doom_env
+    # Walk Gym/Gymnasium wrapper chain; stop when we find either knob's
+    # backing attribute (skill needs ``game``, num_bots needs ``_num_bots``).
+    while hasattr(base, "env") and not hasattr(base, "game") and not hasattr(base, "_num_bots"):
+        base = base.env
+    if stage.skill is not None:
+        # Skill might live one wrapper deeper than ``_num_bots``; do a
+        # short secondary descent if the current ``base`` lacks ``game``.
+        skill_base = base
+        while hasattr(skill_base, "env") and not hasattr(skill_base, "game"):
+            skill_base = skill_base.env
+        game = getattr(skill_base, "game", None)
+        if game is not None:
+            set_skill = getattr(game, "set_doom_skill", None)
+            if set_skill is not None:
+                set_skill(stage.skill)
+            if hasattr(skill_base, "_doom_skill"):
+                skill_base._doom_skill = stage.skill
+    if stage.num_bots is not None:
+        bots_base = base
+        while hasattr(bots_base, "env") and not hasattr(bots_base, "_num_bots"):
+            bots_base = bots_base.env
+        if hasattr(bots_base, "_num_bots"):
+            bots_base._num_bots = int(stage.num_bots)
+
+
 class SkillCurriculumCallback(BaseCallback):
     """Promote ``doom_skill`` on all training/eval envs based on eval reward.
 
@@ -184,56 +360,77 @@ class SkillCurriculumCallback(BaseCallback):
         verbose: int = 1,
     ) -> None:
         super().__init__(verbose=verbose)
-        if not stages:
-            raise ValueError("stages must be non-empty")
         self._eval_cb = eval_cb
-        self._stages = stages
-        self._idx = 0
-        self._min_gap = max(1, int(min_evals_between_promotions))
+        self._state = CurriculumController(
+            stages,
+            min_evals_between_promotions=min_evals_between_promotions,
+        )
         self._sync_eval_env = sync_eval_env
         self._last_seen_eval_ts: int = -1
-        self._evals_since_promotion = 0
-        # Populated at _on_training_start so tests (and post-hoc summaries)
-        # can inspect the full promotion timeline.
-        self.promotions: list[dict[str, Any]] = []
+        # The pre-controller field name. Tests and downstream code may
+        # poke at ``promotions`` directly — forward to the controller's
+        # list (same object) so legacy access stays valid.
+        # Populated as soon as ``_on_training_start`` runs.
 
     # ------------------------------------------------------------------
-    # Public introspection helpers
+    # Public introspection helpers — forwarded to the controller so
+    # external code that imported these stays binary-compatible across
+    # the controller refactor.
     # ------------------------------------------------------------------
 
     @property
     def current_stage(self) -> CurriculumStage:
-        return self._stages[self._idx]
+        return self._state.current_stage
 
     @property
     def current_skill(self) -> int | None:
-        return self.current_stage.skill
+        return self._state.current_skill
 
     @property
     def current_num_bots(self) -> int | None:
-        return self.current_stage.num_bots
+        return self._state.current_num_bots
 
     @property
     def current_stage_index(self) -> int:
-        return self._idx
+        return self._state.current_stage_index
 
     @property
     def is_terminal(self) -> bool:
-        return self._idx >= len(self._stages) - 1
+        return self._state.is_terminal
+
+    @property
+    def promotions(self) -> list[dict[str, Any]]:
+        return self._state.promotions
+
+    @property
+    def _evals_since_promotion(self) -> int:
+        # Test-only accessor — tests poke at this internal counter to
+        # verify min_gap behaviour. Forwards to the controller.
+        return self._state.evals_since_promotion
+
+    @property
+    def _stages(self) -> list[CurriculumStage]:
+        # Legacy accessor used by older downstream code.
+        return self._state._stages
+
+    @property
+    def _idx(self) -> int:
+        # Legacy accessor.
+        return self._state.current_stage_index
 
     # ------------------------------------------------------------------
     # SB3 callback protocol
     # ------------------------------------------------------------------
 
     def _on_training_start(self) -> None:
+        initial_stage = self._state.record_initial()
         # Always seed the eval env with the initial stage even when
         # ``sync_eval_env=False``; that flag only gates future promotions.
-        self._apply_stage(self.current_stage, sync_eval=True)
-        self.promotions.append(self._promotion_entry(trigger="initial", mean_r=None))
+        self._apply_stage(initial_stage, sync_eval=True)
         if self.verbose:
             print(
-                f"[curriculum] start {self._describe_stage(self.current_stage)} "
-                f"(stage 1 / {len(self._stages)})",
+                f"[curriculum] start {self._state.describe_stage()} "
+                f"(stage 1 / {self._state.num_stages})",
             )
 
     def _on_step(self) -> bool:
@@ -245,28 +442,26 @@ class SkillCurriculumCallback(BaseCallback):
             return True
         # A fresh eval result is available.
         self._last_seen_eval_ts = latest_ts
-        self._evals_since_promotion += 1
-        self._log_current_stage()
-
-        if self.is_terminal:
-            return True
-        threshold = self._stages[self._idx].promote_at
-        assert threshold is not None  # non-terminal stages are validated to have one
         mean_r = float(self._eval_cb.last_mean_reward)
-        if mean_r >= threshold and self._evals_since_promotion >= self._min_gap:
-            self._idx += 1
-            new_stage = self.current_stage
+
+        new_stage = self._state.maybe_promote(
+            current_step=int(self.num_timesteps),
+            eval_mean_reward=mean_r,
+        )
+        # Log current stage on every fresh eval (whether or not we promoted)
+        # so a flat training run still has a non-empty curriculum/* series.
+        self._log_current_stage()
+        if new_stage is not None:
             self._apply_stage(new_stage)
-            self._evals_since_promotion = 0
-            self.promotions.append(
-                self._promotion_entry(trigger="promotion", mean_r=mean_r),
-            )
             if self.verbose:
+                threshold = self._state._stages[
+                    self._state.current_stage_index - 1
+                ].promote_at
                 print(
                     f"[curriculum] step={self.num_timesteps} "
                     f"eval_mean={mean_r:.2f} >= {threshold:.2f} "
-                    f"-> promote to {self._describe_stage(new_stage)} "
-                    f"(stage {self._idx + 1} / {len(self._stages)})",
+                    f"-> promote to {self._state.describe_stage(new_stage)} "
+                    f"(stage {self._state.current_stage_index + 1} / {self._state.num_stages})",
                 )
             self._log_current_stage()
             self.logger.record("curriculum/promotion_step", self.num_timesteps)
@@ -296,34 +491,13 @@ class SkillCurriculumCallback(BaseCallback):
             if eval_env is not None:
                 _set_num_bots_on_vec_env(eval_env, stage.num_bots)
 
-    def _promotion_entry(
-        self, *, trigger: str, mean_r: float | None,
-    ) -> dict[str, Any]:
-        stage = self.current_stage
-        return {
-            "step": int(self.num_timesteps),
-            "skill": stage.skill,
-            "num_bots": stage.num_bots,
-            "trigger": trigger,
-            "eval_mean_reward": mean_r,
-        }
-
     def _log_current_stage(self) -> None:
-        stage = self.current_stage
+        stage = self._state.current_stage
         if stage.skill is not None:
             self.logger.record("curriculum/skill", stage.skill)
         if stage.num_bots is not None:
             self.logger.record("curriculum/num_bots", stage.num_bots)
-        self.logger.record("curriculum/stage_index", self._idx)
-
-    @staticmethod
-    def _describe_stage(stage: CurriculumStage) -> str:
-        parts: list[str] = []
-        if stage.skill is not None:
-            parts.append(f"skill={stage.skill}")
-        if stage.num_bots is not None:
-            parts.append(f"num_bots={stage.num_bots}")
-        return " ".join(parts) or "<empty stage>"
+        self.logger.record("curriculum/stage_index", self._state.current_stage_index)
 
 
 def _iter_inner_envs(vec_env: Any) -> Iterable[Any]:

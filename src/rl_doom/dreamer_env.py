@@ -146,9 +146,17 @@ class DreamerDoomEnv:
         is_last = bool(terminated or truncated)
         # Dreamer distinguishes ``is_last`` (episode ended) from
         # ``is_terminal`` (absorbing state, i.e. "real" termination not a
-        # time-limit truncation). Only ``terminated`` counts as terminal.
+        # time-limit truncation). DoomEnv folds ViZDoom's scenario timeout
+        # into ``terminated=True`` and never sets ``truncated``, so we have
+        # to consult ``info["termination_reason"]`` to recover the
+        # distinction — otherwise the world model learns that running out
+        # the clock is an absorbing state.
+        if terminated and info.get("termination_reason") == "timeout":
+            is_terminal = False
+        else:
+            is_terminal = bool(terminated)
         return (
-            self._obs_dict(obs, is_first=False, is_terminal=bool(terminated)),
+            self._obs_dict(obs, is_first=False, is_terminal=is_terminal),
             float(reward),
             is_last,
             info,

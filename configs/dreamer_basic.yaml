@@ -8,10 +8,11 @@ algorithm: dreamer
 seed: 42
 
 env:
+  # n_envs is intentionally NOT exposed for dreamer — the upstream port
+  # trains single-env and its train_ratio is calibrated for that.
   resize_shape: [64, 64]        # Dreamer default; smaller than DQN/PPO 84x84
   frame_skip: 4                 # action_repeat in dreamerv3-torch terms
   grayscale: false              # Dreamer consumes RGB by default
-  n_envs: 1                     # port trains single-env; parallel needs extra plumbing
   doom_skill: 3                 # ViZDoom difficulty (1..5); 3 = "Hurt me plenty"
   num_bots: 0                   # ZDoom AI bots via addbot (deathmatch-only)
 

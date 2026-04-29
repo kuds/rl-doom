@@ -135,6 +135,32 @@ def _expand_variants(matrix_cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return runs
 
 
+def _resolve_dreamer_port_path() -> Path:
+    """Locate the ``NM512/dreamerv3-torch`` checkout the dreamer agent needs.
+
+    Lookup order:
+        1. ``$DREAMERV3_TORCH_PATH`` env var (explicit override)
+        2. ``/content/dreamerv3-torch`` (Colab default — matches the notebook)
+        3. ``~/dreamerv3-torch`` (local default)
+
+    The first candidate that exists wins. If none exist we still return the
+    last fallback path — ``train_dreamer`` will raise a friendly error
+    pointing at the clone command.
+    """
+    import os
+
+    env_path = os.environ.get("DREAMERV3_TORCH_PATH")
+    candidates = []
+    if env_path:
+        candidates.append(Path(env_path).expanduser())
+    candidates.append(Path("/content/dreamerv3-torch"))
+    candidates.append(Path.home() / "dreamerv3-torch")
+    for cand in candidates:
+        if cand.is_dir():
+            return cand
+    return candidates[-1]
+
+
 def _run_one(
     spec: dict[str, Any],
     *,
@@ -199,27 +225,48 @@ def _run_one(
         f"\n[matrix:{matrix_name}] variant={variant_name} scenario={scenario} "
         f"algo={algo} seed={seed} run_dir={run_dir}",
     )
-    result = train_sb3(
-        algo=algo,
-        scenario=scenario,
-        run_dir=run_dir,
-        hyperparams=hp,
-        seed=seed,
-        total_timesteps=total_ts,
-        n_envs=n_envs,
-        eval_freq=int(eval_cfg.get("eval_freq", 25_000)),
-        eval_episodes=int(eval_cfg.get("n_episodes", 10)),
-        checkpoint_freq=int(training_cfg.get("checkpoint_freq", 100_000)),
-        record_video=True,
-        device=device,
-        resize_shape=tuple(env_cfg.get("resize_shape", (84, 84))),
-        frame_skip=int(env_cfg.get("frame_skip", 4)),
-        num_stack=int(env_cfg.get("num_stack", 4)),
-        doom_skill=env_cfg.get("doom_skill"),
-        num_bots=int(env_cfg.get("num_bots", 0)),
-        policy_kwargs=policy_kwargs_from_config(policy_cfg),
-        curriculum=curriculum_cfg,
-    )
+    if algo == "dreamer":
+        # DreamerV3 has its own training driver (different replay/loss/eval
+        # plumbing than SB3) — dispatch to ``train_dreamer`` and let it write
+        # the same artefact layout so the matrix CSV consumer doesn't care.
+        from rl_doom.agents.dreamer import train_dreamer
+
+        result = train_dreamer(
+            scenario=scenario,
+            run_dir=run_dir,
+            total_timesteps=total_ts,
+            hyperparams=hp,
+            env_cfg=env_cfg,
+            eval_cfg=eval_cfg,
+            training_cfg={**training_cfg, "total_timesteps": total_ts},
+            port_path=_resolve_dreamer_port_path(),
+            seed=seed,
+            device=device,
+            record_video=True,
+            curriculum=curriculum_cfg,
+        )
+    else:
+        result = train_sb3(
+            algo=algo,
+            scenario=scenario,
+            run_dir=run_dir,
+            hyperparams=hp,
+            seed=seed,
+            total_timesteps=total_ts,
+            n_envs=n_envs,
+            eval_freq=int(eval_cfg.get("eval_freq", 25_000)),
+            eval_episodes=int(eval_cfg.get("n_episodes", 10)),
+            checkpoint_freq=int(training_cfg.get("checkpoint_freq", 100_000)),
+            record_video=True,
+            device=device,
+            resize_shape=tuple(env_cfg.get("resize_shape", (84, 84))),
+            frame_skip=int(env_cfg.get("frame_skip", 4)),
+            num_stack=int(env_cfg.get("num_stack", 4)),
+            doom_skill=env_cfg.get("doom_skill"),
+            num_bots=int(env_cfg.get("num_bots", 0)),
+            policy_kwargs=policy_kwargs_from_config(policy_cfg),
+            curriculum=curriculum_cfg,
+        )
     wall = time.time() - t_start
     print(
         f"[matrix:{matrix_name}] done variant={variant_name} seed={seed} "

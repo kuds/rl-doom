@@ -33,6 +33,7 @@ ALGO_LABELS: dict[str, str] = {
     "dqn": "Double DQN",
     "ppo": "PPO",
     "recurrent_ppo": "Recurrent PPO (LSTM)",
+    "dreamer": "DreamerV3",
 }
 
 

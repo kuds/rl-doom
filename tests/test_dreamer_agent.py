@@ -160,15 +160,18 @@ def test_build_config_merges_preset_over_defaults(fake_port: Path) -> None:
     # env_cfg overrides win over preset.
     assert cfg.action_repeat == 4
     assert cfg.size == (64, 64)
-    # per-call wiring.
-    assert cfg.steps == 50000
+    # per-call wiring. Note ``cfg.steps = total_timesteps - eval_every`` so
+    # the loop's eval-chunk overshoot lands at the user's budget rather than
+    # exceeding it. See _build_config for the rationale.
+    assert cfg.steps == 50000 - 5000
     assert cfg.eval_every == 5000
     assert cfg.eval_episode_num == 7
     assert cfg.seed == 42
     assert cfg.device == "cpu"
-    # Doom-fixed overrides win over everything.
+    # Hard locks — YAML can't reach these.
     assert cfg.envs == 1
     assert cfg.parallel is False
+    # Doom defaults — no YAML override here, so they fall through.
     assert cfg.compile is False
     assert cfg.video_pred_log is False
     assert cfg.expl_behavior == "greedy"
@@ -213,6 +216,96 @@ def test_doom_fixed_overrides_pin_single_env() -> None:
     """Sanity check: the fixed-override dict locks ``envs=1`` + ``parallel=False``."""
     assert _DOOM_FIXED_OVERRIDES["envs"] == 1
     assert _DOOM_FIXED_OVERRIDES["parallel"] is False
+
+
+def test_user_yaml_can_override_doom_defaults(fake_port: Path) -> None:
+    """``video_pred_log`` / ``expl_behavior`` / ``compile`` are *defaults*, not locks.
+
+    The pre-split code applied these after user YAML, silently shadowing any
+    user-supplied value. The split keeps the Doom-friendly defaults but makes
+    them genuinely override-able from the per-scenario YAML.
+    """
+    cfg = _build_config(
+        port_path=fake_port,
+        scenario="defend_the_center",
+        env_cfg={"resize_shape": [64, 64], "frame_skip": 4, "grayscale": False},
+        hyperparams={
+            "preset": "atari100k",
+            "video_pred_log": True,
+            "expl_behavior": "plan2explore",
+            "compile": True,
+        },
+        eval_cfg={},
+        training_cfg={"total_timesteps": 1000},
+        seed=0,
+        device="cpu",
+        logdir=fake_port / "logs",
+    )
+    assert cfg.video_pred_log is True
+    assert cfg.expl_behavior == "plan2explore"
+    assert cfg.compile is True
+    # Hard locks remain locked even when user YAML tries to flip them.
+    assert cfg.envs == 1
+    assert cfg.parallel is False
+
+
+def test_total_timesteps_compensates_for_eval_overshoot(fake_port: Path) -> None:
+    """``cfg.steps + cfg.eval_every`` (the loop ceiling) must match ``total_timesteps``.
+
+    Without compensation, a 50k budget with eval_every=5k drifts to ~55k env
+    interactions because the loop runs until ``agent._step >= cfg.steps +
+    cfg.eval_every``. The fix subtracts eval_every from ``cfg.steps`` so the
+    overshoot lands at the budget instead of past it.
+    """
+    cfg = _build_config(
+        port_path=fake_port,
+        scenario="basic",
+        env_cfg={},
+        hyperparams={"preset": "atari100k"},
+        eval_cfg={"eval_freq": 5000},
+        training_cfg={"total_timesteps": 50000},
+        seed=0,
+        device="cpu",
+        logdir=fake_port / "logs",
+    )
+    assert cfg.steps + cfg.eval_every == 50000
+
+
+def test_total_timesteps_floor_for_smoke_tests(fake_port: Path) -> None:
+    """A budget smaller than eval_every should still produce a positive ``steps``."""
+    cfg = _build_config(
+        port_path=fake_port,
+        scenario="basic",
+        env_cfg={},
+        hyperparams={"preset": "atari100k"},
+        eval_cfg={"eval_freq": 10000},
+        training_cfg={"total_timesteps": 5000},  # smaller than eval_every
+        seed=0,
+        device="cpu",
+        logdir=fake_port / "logs",
+    )
+    assert cfg.steps == 10000  # floored at eval_every, never zero/negative
+
+
+def test_hard_locks_cannot_be_overridden_by_yaml(fake_port: Path) -> None:
+    """``parallel`` / ``envs`` are architectural locks — YAML must not unlock them."""
+    cfg = _build_config(
+        port_path=fake_port,
+        scenario="basic",
+        env_cfg={"resize_shape": [64, 64], "frame_skip": 4},
+        hyperparams={
+            "preset": "atari100k",
+            "parallel": True,   # malicious YAML
+            "envs": 8,
+        },
+        eval_cfg={},
+        training_cfg={"total_timesteps": 1000},
+        seed=0,
+        device="cpu",
+        logdir=fake_port / "logs",
+    )
+    assert cfg.parallel is False
+    assert cfg.envs == 1
 
 
 # ---------------------------------------------------------------------------

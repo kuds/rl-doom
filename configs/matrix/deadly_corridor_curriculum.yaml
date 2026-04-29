@@ -1,5 +1,5 @@
 # Compare baseline vs. skill-curriculum on Deadly Corridor across
-# DQN, PPO, and Recurrent PPO, over three seeds per variant.
+# DQN, PPO, Recurrent PPO, and DreamerV3, over three seeds per variant.
 #
 # Run with:
 #     python -m scripts.run_experiment_matrix \
@@ -18,9 +18,11 @@
 
 name: deadly_corridor_curriculum
 
-# 3 seeds × 6 variants = 18 runs. Drop seeds before scheduling a real
+# 3 seeds × 8 variants = 24 runs. Drop seeds before scheduling a real
 # compute-limited session; the default here targets a multi-GPU or
-# overnight local run.
+# overnight local run. Dreamer variants assume the
+# ``NM512/dreamerv3-torch`` checkout is reachable via the
+# ``DREAMERV3_TORCH_PATH`` env var (or one of the runner's fallbacks).
 seeds: [42, 123, 777]
 
 variants:
@@ -41,3 +43,9 @@ variants:
 
   - name: recurrent_ppo_curriculum
     base_config: recurrent_ppo_deadly_corridor_curriculum
+
+  - name: dreamer_baseline
+    base_config: dreamer_deadly_corridor
+
+  - name: dreamer_curriculum
+    base_config: dreamer_deadly_corridor_curriculum

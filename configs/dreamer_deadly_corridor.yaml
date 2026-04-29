@@ -9,10 +9,11 @@ algorithm: dreamer
 seed: 42
 
 env:
+  # n_envs is intentionally NOT exposed for dreamer — the upstream port
+  # trains single-env and its train_ratio is calibrated for that.
   resize_shape: [64, 64]
   frame_skip: 4
   grayscale: false
-  n_envs: 1
   doom_skill: 3
   num_bots: 0
 
