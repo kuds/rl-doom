@@ -56,6 +56,50 @@ from rl_doom.scenario_limits import EPISODE_METRIC_KEYS
 # ``lstm_hidden_size`` knob via policy_kwargs.
 _PPO_FAMILY = {"ppo", "recurrent_ppo"}
 
+
+def _recurrent_ppo_class() -> type[BaseAlgorithm]:
+    """Import ``RecurrentPPO`` on demand.
+
+    ``sb3-contrib`` is an optional dependency; deferring the import keeps
+    PPO/DQN-only installs working.
+    """
+    from sb3_contrib import RecurrentPPO
+
+    return RecurrentPPO
+
+
+# Algorithm name -> SB3 class, behind lazy factories so ``sb3_contrib`` is only
+# imported when it is actually asked for.
+#
+# One registry rather than a dispatch per call site. There used to be three,
+# and two of them ended in a silent ``else: DQN`` catch-all, so any name that
+# was not exactly "ppo" got loaded through ``DQN.load``. That is not
+# hypothetical: notebook 05 analyses ``["dqn", "ppo", "recurrent_ppo"]`` and
+# every recurrent_ppo run failed to load, while ``_record_video``'s copy would
+# have mis-loaded at the very end of a multi-hour run, after training had
+# already succeeded.
+_ALGO_CLASSES: dict[str, Callable[[], type[BaseAlgorithm]]] = {
+    "ppo": lambda: PPO,
+    "dqn": lambda: DQN,
+    "recurrent_ppo": _recurrent_ppo_class,
+}
+
+
+def resolve_algo_class(algo: str) -> type[BaseAlgorithm]:
+    """Return the SB3 class for *algo*, raising on anything unrecognised.
+
+    Raising matters more than it looks: the failure mode this replaces was
+    loading a checkpoint through the wrong class, which surfaces as a confusing
+    shape/observation-space error far from the actual mistake — or, worse, does
+    not surface at all.
+    """
+    factory = _ALGO_CLASSES.get(algo.lower())
+    if factory is None:
+        raise ValueError(
+            f"Unknown algo {algo!r}; expected one of {sorted(_ALGO_CLASSES)}.",
+        )
+    return factory()
+
 # ---------------------------------------------------------------------------
 # GPU / environment metadata
 # ---------------------------------------------------------------------------
@@ -113,11 +157,13 @@ def _build_model(
     """
     algo_norm = algo.lower()
     pk = policy_kwargs or {}
-    if algo_norm in {"ppo", "recurrent_ppo"}:
-        # sb3-contrib is an optional dependency: import it only when the
-        # caller actually asks for recurrent_ppo so projects that just want
-        # PPO/DQN don't pay the install cost (and CI envs without
-        # sb3-contrib can still run the rest of the suite).
+    # Validate against the registry up front, so an unknown name fails here
+    # rather than further downstream. The branches below still name concrete
+    # classes: each algorithm takes a different constructor signature, and
+    # going through the registry's ``type[BaseAlgorithm]`` would erase the
+    # types that let mypy catch a misspelled hyperparameter kwarg.
+    resolve_algo_class(algo_norm)
+    if algo_norm in _PPO_FAMILY:
         ppo_kwargs = dict(
             learning_rate=hyperparams["lr"],
             n_steps=hyperparams["n_steps"],
@@ -136,9 +182,7 @@ def _build_model(
             policy_kwargs=pk,
         )
         if algo_norm == "recurrent_ppo":
-            from sb3_contrib import RecurrentPPO
-
-            return RecurrentPPO("CnnLstmPolicy", vec_env, **ppo_kwargs)
+            return _recurrent_ppo_class()("CnnLstmPolicy", vec_env, **ppo_kwargs)
         return PPO("CnnPolicy", vec_env, **ppo_kwargs)
     if algo_norm == "dqn":
         return DQN(
@@ -163,8 +207,12 @@ def _build_model(
             verbose=verbose,
             policy_kwargs=pk,
         )
+    # Unreachable: resolve_algo_class above rejects anything not in the
+    # registry. Kept so adding a registry entry without a construction branch
+    # here fails loudly instead of falling off the end returning None.
     raise ValueError(
-        f"Unknown algo {algo!r}; expected 'ppo', 'recurrent_ppo', or 'dqn'.",
+        f"Algo {algo!r} is registered but has no construction branch in "
+        f"_build_model.",
     )
 
 
@@ -887,16 +935,8 @@ def train_sb3(
         # fall back to the in-memory (final-step) model if eval didn't run.
         best_ckpt = ckpt_dir / "best" / "best_model.zip"
         if best_ckpt.exists():
-            algo_norm = algo.lower()
-            if algo_norm == "recurrent_ppo":
-                from sb3_contrib import RecurrentPPO
-
-                cls: type[BaseAlgorithm] = RecurrentPPO
-            elif algo_norm == "ppo":
-                cls = PPO
-            else:
-                cls = DQN
-            video_model: BaseAlgorithm = cls.load(str(best_ckpt), device=device)
+            video_cls = resolve_algo_class(algo)
+            video_model: BaseAlgorithm = video_cls.load(str(best_ckpt), device=device)
         else:
             video_model = model
         # Match the video env to the eval env. When a curriculum ran, the

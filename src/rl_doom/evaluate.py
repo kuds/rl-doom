@@ -210,11 +210,15 @@ def load_run(
         if candidate.exists():
             import json
 
-            from stable_baselines3 import DQN, PPO
+            # Deferred so ``rl_doom.evaluate`` stays importable without SB3
+            # installed, matching the lazy imports elsewhere in this module.
+            from rl_doom.sb3_utils import resolve_algo_class
 
             algo = json.loads((run_dir / "config.json").read_text()).get("algo", "ppo")
-            cls = PPO if algo.lower() == "ppo" else DQN
-            return cls.load(str(candidate), device=device)
+            # Was ``PPO if algo == "ppo" else DQN``, which sent every
+            # recurrent_ppo run through ``DQN.load`` — notebook 05 analyses
+            # dqn/ppo/recurrent_ppo, so a third of its runs could not be loaded.
+            return resolve_algo_class(algo).load(str(candidate), device=device)
 
     # Legacy fallback: infer algo from config, load hand-rolled agent.
     import json
