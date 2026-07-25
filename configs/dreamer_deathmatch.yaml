@@ -26,9 +26,13 @@ hyperparams:
   imag_horizon: 20              # longer horizon for navigation planning
 
 training:
-  total_timesteps: 1000000      # PPO uses 2.5M; Dreamer should be more
-                                # sample-efficient but harder ceiling
-  checkpoint_freq: 100000
+  # Matched to dreamer_deathmatch_curriculum.yaml so the baseline-vs-curriculum
+  # comparison is controlled; this was 1M against the curriculum arm's 1.5M.
+  # See dreamer_deadly_corridor.yaml for why the baseline was levelled up
+  # rather than the curriculum arm levelled down. PPO uses 2.5M; Dreamer is
+  # more sample-efficient but has a harder ceiling here.
+  total_timesteps: 1500000
+  checkpoint_freq: 150000
 
 eval:
   eval_freq: 50000

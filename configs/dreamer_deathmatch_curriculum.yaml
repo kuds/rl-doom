@@ -34,10 +34,11 @@ hyperparams:
   imag_horizon: 20              # longer horizon for navigation planning
 
 training:
-  total_timesteps: 1500000      # PPO uses 2.5M; Dreamer is more
-                                # sample-efficient but the bot-count
-                                # ramp gives the world model two
-                                # difficulty boundaries to relearn.
+  # Matched to dreamer_deathmatch.yaml (the baseline arm) so the matrix
+  # comparison isolates the curriculum. The bot-count ramp gives the world
+  # model two difficulty boundaries to relearn, which is why this is above
+  # Dreamer's usual budget; the baseline was raised to match.
+  total_timesteps: 1500000
   checkpoint_freq: 150000
 
 eval:

@@ -148,6 +148,51 @@ def check_replay_buffer_fits(
         )
 
 
+def apply_stage0_env_settings(
+    stage0: CurriculumStage,
+    *,
+    doom_skill: int | None,
+    num_bots: int,
+    verbose: bool = True,
+) -> tuple[int | None, int]:
+    """Fold a curriculum's first stage into the env settings it owns.
+
+    Returns the ``(doom_skill, num_bots)`` the training and eval envs should be
+    built with. A stage only overrides the knobs it actually sets — the rest
+    stay as the caller configured them.
+
+    That distinction is the whole point. Not every curriculum ramps difficulty:
+    the deathmatch curricula ramp *bots*, so their stages carry only
+    ``num_bots`` and leave ``skill`` as ``None``. Overriding unconditionally
+    replaced the config's ``doom_skill: 3`` with ``None``, which falls through
+    ``SCENARIO_DEFAULT_SKILL`` (empty) to the scenario cfg's own default — so
+    the curriculum arm trained at a different difficulty from its baseline
+    sibling, confounding the comparison the matrix exists to make.
+    ``apply_stage_to_doom_env`` guards on ``skill is not None`` too, so the
+    callback could not recover it either.
+    """
+    if stage0.skill is not None:
+        if verbose and doom_skill is not None and doom_skill != stage0.skill:
+            print(
+                f"[train_sb3] curriculum enabled: overriding doom_skill="
+                f"{doom_skill} with stage-0 skill={stage0.skill}",
+            )
+        doom_skill = stage0.skill
+    if stage0.num_bots is not None:
+        if verbose and num_bots and num_bots != stage0.num_bots:
+            print(
+                f"[train_sb3] curriculum enabled: overriding num_bots="
+                f"{num_bots} with stage-0 num_bots={stage0.num_bots}",
+            )
+        # Seed at construction as well as through the callback. The callback
+        # applies stage 0 in ``_on_training_start``, which is early enough for
+        # training, but building the envs with the right value keeps pre- and
+        # post-callback state consistent — and the video env at the end reads
+        # these same variables.
+        num_bots = stage0.num_bots
+    return doom_skill, num_bots
+
+
 def resolve_algo_class(algo: str) -> type[BaseAlgorithm]:
     """Return the SB3 class for *algo*, raising on anything unrecognised.
 
@@ -822,14 +867,9 @@ def train_sb3(
             if k in curriculum
         }
     if curriculum_stages:
-        # The curriculum owns the initial difficulty — override any
-        # ``doom_skill`` the caller passed so train + eval envs agree.
-        if doom_skill is not None and doom_skill != curriculum_stages[0].skill:
-            print(
-                f"[train_sb3] curriculum enabled: overriding doom_skill="
-                f"{doom_skill} with stage-0 skill={curriculum_stages[0].skill}",
-            )
-        doom_skill = curriculum_stages[0].skill
+        doom_skill, num_bots = apply_stage0_env_settings(
+            curriculum_stages[0], doom_skill=doom_skill, num_bots=num_bots,
+        )
 
     # --- envs ---------------------------------------------------------
     from rl_doom.env import make_sb3_env

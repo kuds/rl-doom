@@ -25,9 +25,19 @@ hyperparams:
   imag_horizon: 20              # longer horizon — corridor needs lookahead
 
 training:
-  total_timesteps: 500000       # half of PPO's 1M budget; Dreamer is more
-                                # sample-efficient on this regime
-  checkpoint_freq: 50000
+  # Matched to dreamer_deadly_corridor_curriculum.yaml. The matrix in
+  # configs/matrix/deadly_corridor_curriculum.yaml runs these two against each
+  # other to answer "does the skill curriculum help?", which only measures the
+  # curriculum if both arms get the same budget — otherwise it measures
+  # compute. This was 500k against the curriculum arm's 1M.
+  #
+  # Levelled up rather than down: the curriculum arm's budget was chosen
+  # deliberately (the world model needs time to relearn dynamics after each
+  # skill flip), and a baseline with the same compute is the stronger, more
+  # conservative comparison. Still well under PPO/DQN/RPPO's 2.5M, since
+  # Dreamer is more sample-efficient in this regime.
+  total_timesteps: 1000000
+  checkpoint_freq: 100000
 
 eval:
   eval_freq: 25000
