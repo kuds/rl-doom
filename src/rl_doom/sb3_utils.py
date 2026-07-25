@@ -805,6 +805,7 @@ def train_sb3(
     use_compound_actions: bool = True,
     policy_kwargs: dict[str, Any] | None = None,
     curriculum: dict[str, Any] | list[CurriculumStage] | None = None,
+    extra_callbacks: list[BaseCallback] | None = None,
 ) -> dict[str, Any]:
     """Train a single SB3 model end-to-end and write *all* artifacts now.
 
@@ -831,6 +832,10 @@ def train_sb3(
     on_complete :
         Optional hook invoked with ``run_dir`` after all artifacts are written
         (e.g. to display the video in a Jupyter cell).
+    extra_callbacks :
+        Additional SB3 callbacks appended after the built-in eval /
+        checkpoint / termination / curriculum ones. Useful for run-specific
+        instrumentation without forking this function.
     curriculum :
         Optional skill-curriculum specification. Accepts either a raw YAML
         dict (``{"stages": [...], "min_evals_between_promotions": ...}``) or
@@ -966,29 +971,80 @@ def train_sb3(
             eval_cb, curriculum_stages, verbose=verbose, **curriculum_kwargs,
         )
         callbacks.append(curriculum_cb)
+    # Appended last so a caller's callback sees the state the built-in ones
+    # have already updated.
+    if extra_callbacks:
+        callbacks.extend(extra_callbacks)
 
     # --- train --------------------------------------------------------
+    #
+    # Everything that makes a run useful — the model, metrics, figures, video,
+    # config.json, stage_summary.txt — is written *after* learn() returns, so
+    # an unguarded exception here discarded all of it. On a 2.5M-step Colab run
+    # that meant a failure at step 2.4M left nothing but periodic checkpoint
+    # zips that nothing in the repo reads.
+    #
+    # On failure we still save the weights and write whatever metrics exist,
+    # mark the run failed, and re-raise. A partial run that can be inspected
+    # beats a clean traceback over an empty directory.
     t_start = time.time()
-    model.learn(
-        total_timesteps=total_timesteps,
-        callback=callbacks,
-        progress_bar=False,
-    )
-    wall_time = time.time() - t_start
-    fps = total_timesteps / wall_time if wall_time > 0 else 0.0
-
-    # --- persist ------------------------------------------------------
-    model.save(str(ckpt_dir / "final.zip"))
-    # Save VecNormalize running stats so a future resumed run can pick up
-    # with the same reward-scale estimate (inference/video doesn't need it
-    # since we only normalise rewards, not observations).
-    if isinstance(vec_env, VecNormalize):
-        vec_env.save(str(ckpt_dir / "vec_normalize.pkl"))
+    training_error: BaseException | None = None
     try:
-        vec_env.close()
-        eval_env.close()
-    except Exception:  # noqa: BLE001 — close is best-effort
-        pass
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=callbacks,
+            progress_bar=False,
+        )
+    except BaseException as exc:  # noqa: BLE001 — re-raised below
+        # BaseException, not Exception: KeyboardInterrupt is the *expected* way
+        # a human stops an overlong run, and losing the run to Ctrl-C is the
+        # most annoying version of this bug.
+        training_error = exc
+        print(
+            f"[train_sb3] training raised {type(exc).__name__}: {exc}\n"
+            f"[train_sb3] salvaging artifacts into {run_dir} before re-raising.",
+        )
+    finally:
+        wall_time = time.time() - t_start
+        # Steps actually completed, which is not total_timesteps on failure.
+        steps_done = int(getattr(model, "num_timesteps", 0))
+        fps = steps_done / wall_time if wall_time > 0 else 0.0
+
+        # --- persist --------------------------------------------------
+        # Saving runs on both paths: on failure these are the only weights
+        # that will exist.
+        try:
+            model.save(str(ckpt_dir / "final.zip"))
+            # Save VecNormalize running stats so a future resumed run can pick
+            # up with the same reward-scale estimate (inference/video doesn't
+            # need it since we only normalise rewards, not observations).
+            if isinstance(vec_env, VecNormalize):
+                vec_env.save(str(ckpt_dir / "vec_normalize.pkl"))
+        except Exception as save_exc:  # noqa: BLE001 — best-effort salvage
+            print(f"[train_sb3] could not save final checkpoint: {save_exc}")
+
+        # Teardown belongs in the finally: ViZDoom spawns a native process per
+        # env, and on the old success-only path a failed run leaked every one
+        # of them.
+        for env_name, env_to_close in (("train", vec_env), ("eval", eval_env)):
+            try:
+                env_to_close.close()
+            except Exception as close_exc:  # noqa: BLE001 — best-effort
+                # Was `except Exception: pass` around both closes together, so
+                # a failure closing the train env also skipped the eval env.
+                print(f"[train_sb3] error closing {env_name} env: {close_exc}")
+
+    if training_error is not None:
+        _write_termination_report(termination_tracker, metrics_dir)
+        mark_run_status(
+            run_dir,
+            status="failed",
+            error=f"{type(training_error).__name__}: {training_error}",
+            completed_timesteps=steps_done,
+            requested_timesteps=total_timesteps,
+            wall_time_seconds=wall_time,
+        )
+        raise training_error
 
     progress = _load_progress_csv(tb_dir / "progress.csv")
     episodes = _collect_episode_stats(monitor_dir)
@@ -1028,7 +1084,10 @@ def train_sb3(
         "eval_rewards": _legacy_eval_log(evaluations),
         "wall_time_seconds": wall_time,
         "fps": fps,
-        "total_env_steps": total_timesteps,
+        # Steps actually run, not requested: they differ whenever training
+        # stops early, and reporting the request would overstate both this and
+        # the FPS derived from it.
+        "total_env_steps": steps_done,
         **per_episode_metrics,
     }
     np.savez(metrics_dir / "training.npz", **savez_kwargs)
