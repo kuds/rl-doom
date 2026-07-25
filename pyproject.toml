@@ -89,6 +89,7 @@ module = [
     "matplotlib.*",
     "vizdoom",
     "vizdoom.*",
+    "google",
     "google.colab",
     "google.colab.*",
     "stable_baselines3",

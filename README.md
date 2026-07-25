@@ -54,12 +54,21 @@ pip install -e ".[notebooks,dev]"
 
 ### Google Colab
 
-Each notebook includes a commented-out **Colab Setup** cell at the top. Uncomment it to automatically:
-1. Clone the repo to `/content/rl-doom`
-2. Install the package with all dependencies (`pip install -e .[notebooks]`)
-3. Set the working directory to `notebooks/`
+The notebooks run unmodified in both places — there is nothing to uncomment. Each one's
+**Environment setup** cell calls `rl_doom.utils.setup_colab()`, which detects the runtime
+and, on Colab only:
 
-There is also a separate **Google Drive** cell you can uncomment to persist artifacts (checkpoints, logs, figures, media) across Colab sessions via Google Drive symlinks.
+1. Clones the repo to `/content/rl-doom`
+2. Installs the package with all dependencies (`pip install -e .[notebooks]`)
+3. Sets the working directory to `notebooks/`
+
+Off Colab it returns immediately and does nothing, so a local run just needs
+`pip install -e ".[notebooks]"` beforehand.
+
+The following **Google Drive persistence** cell calls `setup_google_drive(DRIVE_ROOT)`,
+which is likewise a no-op off Colab. On Colab it mounts Drive and symlinks the
+`training_jobs/` and `analysis/` trees into it so runs survive the runtime being
+recycled. Edit `DRIVE_ROOT` to choose where they land.
 
 ## Quick Start
 
