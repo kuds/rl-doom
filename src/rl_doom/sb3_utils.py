@@ -85,6 +85,69 @@ _ALGO_CLASSES: dict[str, Callable[[], type[BaseAlgorithm]]] = {
 }
 
 
+def _format_gib(n_bytes: float) -> str:
+    return f"{n_bytes / 2**30:.1f} GiB"
+
+
+def estimate_replay_bytes(buffer_size: int, obs_space: Any, n_envs: int = 1) -> int:
+    """Bytes SB3's ``ReplayBuffer`` will allocate for observations.
+
+    SB3 keeps ``observations`` *and* ``next_observations`` as separate arrays,
+    so the cost is two full copies of the frame stack per transition. The
+    ``optimize_memory_usage=True`` layout that would halve this is not usable
+    here: SB3 rejects it together with ``handle_timeout_termination=True``,
+    which is what makes a truncated episode bootstrap ``V(s')`` instead of
+    treating a scenario timeout as absorbing (see ``DoomEnv.step``). Correct
+    value targets are worth more than the memory.
+
+    Non-observation arrays (actions, rewards, dones, timeouts) are a few bytes
+    per transition and are ignored.
+    """
+    obs_bytes = int(np.prod(obs_space.shape)) * np.dtype(obs_space.dtype).itemsize
+    per_env = max(buffer_size // max(n_envs, 1), 1)
+    return per_env * max(n_envs, 1) * obs_bytes * 2
+
+
+def check_replay_buffer_fits(
+    buffer_size: int, obs_space: Any, n_envs: int = 1, *, headroom: float = 0.9,
+) -> None:
+    """Fail fast when a DQN replay buffer cannot fit in available memory.
+
+    SB3 has its own check, but it only warns, only *after* the allocation is
+    attempted, and only when ``psutil`` is importable — which it silently is
+    not in a default install. The observed failure without this guard is a bare
+    ``numpy._core._exceptions._ArrayMemoryError`` partway into a run that has
+    already spent minutes building envs.
+    """
+    needed = estimate_replay_bytes(buffer_size, obs_space, n_envs)
+    try:
+        import psutil
+    except ImportError:
+        # Without psutil there is nothing to compare against; the estimate is
+        # still worth printing so an OOM later is at least attributable.
+        print(
+            f"[train_sb3] replay buffer needs ~{_format_gib(needed)} "
+            f"(buffer_size={buffer_size:,}); install psutil to have this "
+            f"checked against available memory before allocating.",
+        )
+        return
+
+    available = psutil.virtual_memory().available
+    if needed > available * headroom:
+        per_transition = max(estimate_replay_bytes(1, obs_space, n_envs), 1)
+        fits = int(available * headroom / per_transition)
+        raise MemoryError(
+            f"DQN replay buffer needs ~{_format_gib(needed)} "
+            f"(buffer_size={buffer_size:,} x {obs_space.shape} uint8 x2 for "
+            f"next_obs) but only {_format_gib(available)} is available.\n"
+            f"Lower `hyperparams.buffer_size` in the config: "
+            f"~{fits:,} transitions fit in the memory you have.\n"
+            f"Note that `optimize_memory_usage=True` would halve this but SB3 "
+            f"rejects it alongside `handle_timeout_termination=True`, which "
+            f"this pipeline needs for correct value targets on timeouts.",
+        )
+
+
 def resolve_algo_class(algo: str) -> type[BaseAlgorithm]:
     """Return the SB3 class for *algo*, raising on anything unrecognised.
 
@@ -185,6 +248,14 @@ def _build_model(
             return _recurrent_ppo_class()("CnnLstmPolicy", vec_env, **ppo_kwargs)
         return PPO("CnnPolicy", vec_env, **ppo_kwargs)
     if algo_norm == "dqn":
+        # Check before constructing: SB3 allocates the whole buffer eagerly in
+        # DQN.__init__, so an oversized buffer_size otherwise surfaces as a
+        # numpy MemoryError after the envs are already up.
+        check_replay_buffer_fits(
+            int(hyperparams["buffer_size"]),
+            vec_env.observation_space,
+            n_envs=getattr(vec_env, "num_envs", 1),
+        )
         return DQN(
             "CnnPolicy",
             vec_env,

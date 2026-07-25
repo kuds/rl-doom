@@ -16,7 +16,15 @@ env:
 
 hyperparams:
   lr: 1.0e-4
-  buffer_size: 100000
+  # Sized so the replay buffer fits a Colab-class box (~12.7 GiB RAM).
+  # SB3 stores obs and next_obs separately, so cost is
+  #   buffer_size x 4x84x84 bytes x 2 ~= 2.6 GiB here.
+  # optimize_memory_usage=True would halve it, but SB3 rejects that
+  # together with handle_timeout_termination, which this pipeline needs
+  # for correct value targets on scenario timeouts. Raise this on a
+  # bigger machine; rl_doom.sb3_utils checks it against real RAM at
+  # startup and fails fast rather than OOMing mid-run.
+  buffer_size: 50000
   learning_starts: 10000
   batch_size: 64
   tau: 1.0                      # hard target update
