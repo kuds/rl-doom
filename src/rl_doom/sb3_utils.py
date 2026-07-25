@@ -551,9 +551,14 @@ def _record_video(
             done = terminated or truncated
             episode_start = np.array([False])
             step += 1
-        if terminated:
+        # ``DoomEnv`` labels every episode it ends — including a scenario
+        # timeout, which it reports as ``truncated`` — so prefer its reason
+        # whenever the env is what stopped us. ``"truncated"`` is reserved for
+        # the recorder hitting its own ``max_steps`` cap, which is a different
+        # thing and worth telling apart in the episode JSON.
+        if terminated or truncated:
             termination = str(last_info.get("termination_reason", "unknown"))
-        elif truncated or step >= max_steps:
+        elif step >= max_steps:
             termination = "truncated"
         else:
             termination = "unknown"

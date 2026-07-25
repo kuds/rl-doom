@@ -676,9 +676,12 @@ def _record_dreamer_video(
             terminated = bool(obs["is_terminal"])
             truncated = bool(is_last and not terminated)
             step += 1
-        if terminated:
+        # Mirrors ``sb3_utils._record_video``: the env labels every episode it
+        # ends (a scenario timeout arrives as a truncation, not a termination),
+        # so ``"truncated"`` means only that the recorder hit its own cap.
+        if terminated or truncated:
             termination = str(last_info.get("termination_reason", "unknown"))
-        elif truncated or step >= max_steps:
+        elif step >= max_steps:
             termination = "truncated"
         else:
             termination = "unknown"

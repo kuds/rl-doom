@@ -145,16 +145,13 @@ class DreamerDoomEnv:
         obs, reward, terminated, truncated, info = self._env.step(idx)
         is_last = bool(terminated or truncated)
         # Dreamer distinguishes ``is_last`` (episode ended) from
-        # ``is_terminal`` (absorbing state, i.e. "real" termination not a
-        # time-limit truncation). DoomEnv folds ViZDoom's scenario timeout
-        # into ``terminated=True`` and never sets ``truncated``, so we have
-        # to consult ``info["termination_reason"]`` to recover the
-        # distinction — otherwise the world model learns that running out
-        # the clock is an absorbing state.
-        if terminated and info.get("termination_reason") == "timeout":
-            is_terminal = False
-        else:
-            is_terminal = bool(terminated)
+        # ``is_terminal`` (absorbing state, i.e. "real" termination and not a
+        # time-limit truncation). That is exactly Gymnasium's
+        # terminated/truncated split, which ``DoomEnv.step`` now reports
+        # directly, so this is a straight pass-through. It used to have to
+        # re-derive the distinction from ``info["termination_reason"]``
+        # because DoomEnv folded timeouts into ``terminated``.
+        is_terminal = bool(terminated)
         return (
             self._obs_dict(obs, is_first=False, is_terminal=is_terminal),
             float(reward),

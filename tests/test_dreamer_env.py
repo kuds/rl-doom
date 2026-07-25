@@ -106,10 +106,11 @@ def test_step_accepts_one_hot_action() -> None:
 def test_timeout_does_not_set_is_terminal() -> None:
     """ViZDoom's scenario timeout should be ``is_last=True, is_terminal=False``.
 
-    ``DoomEnv.step`` folds the timeout into ``terminated=True`` (it never sets
-    ``truncated``), distinguishing the cause only via ``info["termination_reason"]``.
-    The dreamer adapter must consult that flag — otherwise the world model
-    learns that clock-runout is an absorbing terminal state.
+    ``DoomEnv.step`` reports a timeout as ``truncated=True, terminated=False``,
+    which is exactly Dreamer's ``is_last`` / ``is_terminal`` split, so the
+    adapter is a pass-through. The invariant still needs a guard: if a timeout
+    ever reaches the world model as terminal, it learns that clock-runout is an
+    absorbing state.
     """
     from rl_doom.dreamer_env import DreamerDoomEnv
 
@@ -122,7 +123,8 @@ def test_timeout_does_not_set_is_terminal() -> None:
             self._fake_image = np.zeros((84, 84), dtype=np.uint8)
 
         def step(self, _action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
-            return self._fake_image, 0.0, True, False, {"termination_reason": "timeout"}
+            # Mirrors DoomEnv's timeout contract: truncated, not terminated.
+            return self._fake_image, 0.0, False, True, {"termination_reason": "timeout"}
 
         def reset(self) -> tuple[Any, dict[str, Any]]:
             return self._fake_image, {}
