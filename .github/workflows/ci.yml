@@ -22,23 +22,38 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install package (without vizdoom binary)
+      - name: Install package
         run: |
           python -m pip install --upgrade pip
-          # Install without the vizdoom dependency to avoid needing its
-          # native build toolchain in CI. Tests that need vizdoom are
-          # skipped when the module isn't importable (see tests/conftest.py).
+          # CPU torch first so the dependency resolution below doesn't pull the
+          # multi-GB CUDA wheel; ``torch>=2.0`` is then already satisfied.
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install gymnasium numpy opencv-python pyyaml tensorboard matplotlib
-          pip install pettingzoo stable-baselines3
-          pip install pytest ruff mypy
-          pip install -e . --no-deps
+          # Install from the declared dependency set rather than a hand-written
+          # list, so pyproject.toml is what CI actually validates. ViZDoom
+          # publishes manylinux wheels for every Python in this matrix, so the
+          # native toolchain that used to force ``--no-deps`` here is no longer
+          # needed and the env/wrapper tests run for real.
+          pip install -e ".[dev]" -c constraints-dev.txt
 
       - name: Ruff lint
-        run: ruff check src tests
+        run: ruff check src tests scripts
 
       - name: Mypy
         run: mypy
+
+      - name: Verify test collection
+        # A module-level importorskip aborts collection of its whole module, so
+        # a missing optional dependency can silently drop unrelated tests and
+        # still report green. Fail loudly if the collected count regresses.
+        run: |
+          COLLECTED=$(pytest --collect-only -q | tail -1 | grep -oE '^[0-9]+')
+          echo "collected $COLLECTED tests"
+          # Floor, not an exact count — raise it when you add a test module.
+          if [ "$COLLECTED" -lt 140 ]; then
+            echo "::error::Expected at least 140 tests, collected $COLLECTED."
+            echo "A dependency is probably missing and skipped a whole module."
+            exit 1
+          fi
 
       - name: Pytest
         run: pytest -v

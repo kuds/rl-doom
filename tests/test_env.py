@@ -86,18 +86,35 @@ def test_reset_clears_bots_before_new_episode() -> None:
     from rl_doom.env import DoomEnv
 
     env = DoomEnv(scenario="deathmatch", num_bots=4)
-    try:
-        calls: list[str] = []
-        original = env.game.send_game_command
+    calls: list[str] = []
 
-        def _record(cmd: str) -> None:
+    class _RecordingGame:
+        """Delegating proxy that records ``send_game_command`` invocations.
+
+        ``DoomGame`` is a pybind11 type whose methods are read-only, so the
+        instance attribute cannot be monkeypatched directly. Swapping
+        ``env.game`` for a proxy works because ``DoomEnv`` stores it as a plain
+        Python attribute and only ever reaches it through normal attribute
+        access.
+        """
+
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+
+        def send_game_command(self, cmd: str) -> None:
             calls.append(cmd)
-            return original(cmd)
+            self._inner.send_game_command(cmd)  # type: ignore[attr-defined]
 
-        env.game.send_game_command = _record
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+    real_game = env.game
+    try:
+        env.game = _RecordingGame(real_game)  # type: ignore[assignment]
         env.reset()
         env.reset()
     finally:
+        env.game = real_game
         env.close()
 
     # Every reset with num_bots>0 must call removebots exactly once before

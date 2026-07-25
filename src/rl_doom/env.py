@@ -342,7 +342,7 @@ class DoomEnv(gym.Env):
             return "timeout"
         return "goal_reached"
 
-    def render(self) -> np.ndarray:  # type: ignore[override]
+    def render(self) -> np.ndarray:
         # Gymnasium's base signature returns RenderFrame | list | None;
         # we always produce an RGB ndarray, which is a valid RenderFrame
         # but narrower than the abstract type.

@@ -68,7 +68,7 @@ testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.10"
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 check_untyped_defs = true
 warn_redundant_casts = true
 warn_unused_ignores = true

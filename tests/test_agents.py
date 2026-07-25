@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 import torch
 
 from rl_doom.agents.dqn import DQNAgent
@@ -138,15 +137,14 @@ def test_ppo_save_load_roundtrip(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Recurrent PPO (sb3-contrib) — model-build smoke tests
+# policy_kwargs translation
 #
-# The SB3-side training path is exercised end-to-end by the notebook; these
-# tests just guarantee that the YAML -> policy_kwargs translation and the
-# _build_model dispatch produce a usable RecurrentPPO instance with the right
-# policy class. Skipped if sb3-contrib isn't installed in the test env.
+# These exercise ``policy_kwargs_from_config`` only — pure dict manipulation
+# with no sb3-contrib dependency, so they must stay in this module and run
+# everywhere. The RecurrentPPO model-build test that *does* need sb3-contrib
+# lives in ``tests/test_recurrent_ppo.py``; keeping it there means a missing
+# optional dependency can only skip its own module.
 # ---------------------------------------------------------------------------
-
-sb3_contrib = pytest.importorskip("sb3_contrib")
 
 
 def test_policy_kwargs_passes_lstm_knobs() -> None:
@@ -168,62 +166,3 @@ def test_policy_kwargs_omits_lstm_knobs_when_absent() -> None:
     pk = policy_kwargs_from_config(cfg)
     assert "lstm_hidden_size" not in pk
     assert "n_lstm_layers" not in pk
-
-
-def test_build_model_recurrent_ppo_returns_recurrent_ppo_instance() -> None:
-    # Lazy imports keep the SB3 dependency out of the module-import critical
-    # path for tests that don't need it (e.g. agent unit tests above).
-    import gymnasium as gym
-    from sb3_contrib import RecurrentPPO
-    from stable_baselines3.common.vec_env import DummyVecEnv
-
-    from rl_doom.sb3_utils import _build_model
-
-    def _make_env() -> gym.Env:
-        # Tiny synthetic image env that matches the obs/action shape DoomEnv
-        # exposes (uint8 84x84 stacked frames + small discrete action set),
-        # so we can build the model without a ViZDoom binary.
-        class _DummyImg(gym.Env):
-            observation_space = gym.spaces.Box(0, 255, (4, 84, 84), dtype=np.uint8)
-            action_space = gym.spaces.Discrete(3)
-
-            def reset(self, *, seed=None, options=None):
-                return self.observation_space.sample(), {}
-
-            def step(self, action):
-                return self.observation_space.sample(), 0.0, False, False, {}
-
-        return _DummyImg()
-
-    vec_env = DummyVecEnv([_make_env for _ in range(2)])
-    hp = {
-        "lr": 3e-4,
-        "n_steps": 8,
-        "batch_size": 8,
-        "n_epochs": 1,
-        "gamma": 0.99,
-        "gae_lambda": 0.95,
-        "clip_eps": 0.2,
-        "entropy_coef": 0.0,
-        "value_coef": 0.5,
-        "max_grad_norm": 0.5,
-    }
-    model = _build_model(
-        "recurrent_ppo",
-        vec_env,
-        hyperparams=hp,
-        tensorboard_log="/tmp/rl_doom_test_tb",
-        device="cpu",
-        seed=0,
-        policy_kwargs={"lstm_hidden_size": 32, "n_lstm_layers": 1},
-    )
-    assert isinstance(model, RecurrentPPO)
-    # Confirms the LSTM kwargs actually reached the policy. ``lstm_actor`` is
-    # the per-policy LSTM module on CnnLstmPolicy; checking its hidden_size is
-    # a stable way to verify the policy_kwargs plumbing without depending on
-    # SB3-contrib's private state-shape attributes.
-    lstm_actor = model.policy.lstm_actor
-    assert lstm_actor is not None
-    # ``getattr`` keeps mypy happy across SB3 versions where
-    # ``lstm_actor`` is typed as the generic ``nn.Module | Tensor`` union.
-    assert getattr(lstm_actor, "hidden_size", None) == 32

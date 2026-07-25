@@ -1,0 +1,42 @@
+# Upper bounds for the CI toolchain and the libraries whose type stubs and
+# runtime behaviour the checks depend on.
+#
+# Why this file exists
+# --------------------
+# ``pyproject.toml`` deliberately declares loose ``>=`` requirements so the
+# package stays installable alongside whatever a user already has. That is the
+# right contract for a library, but it makes CI non-reproducible: a new mypy or
+# a new stable-baselines3 can turn a green build red without a commit, and
+# ``warn_unused_ignores = true`` means even a *stub improvement* upstream breaks
+# the type check (a ``# type: ignore`` that was necessary becomes "unused").
+#
+# CI installs with ``-c constraints-dev.txt`` so the checks run against a known
+# set. Nothing here changes what ``pip install rl-doom`` resolves for a user.
+#
+# Bumping
+# -------
+# Raise a bound deliberately, in its own commit, so an upstream break is
+# attributable. ``pip install -e ".[dev]"`` without ``-c`` reproduces the
+# unconstrained resolution if you want to see what would break next.
+
+# Checks. `warn_unused_ignores` makes mypy version-sensitive in both
+# directions, so this is the most important pin in the file.
+mypy>=2.3,<2.4
+ruff>=0.16,<0.17
+pytest>=9.1,<10
+
+# RL stack. SB3 and sb3-contrib move in lockstep and their public API is what
+# `rl_doom.sb3_utils` is written against.
+stable-baselines3>=2.9,<3
+sb3-contrib>=2.9,<3
+gymnasium>=1.3,<2
+pettingzoo>=1.26,<2
+
+# ViZDoom publishes manylinux wheels for cp39-cp314, so CI needs no native
+# toolchain. Pinned to a minor range because the scenario .cfg files and the
+# GameVariable enum this repo reads are part of its distribution.
+vizdoom>=1.3,<1.4
+
+# Numerics. torch itself is installed separately from the CPU wheel index.
+torch>=2.13,<3
+numpy>=2.4,<3

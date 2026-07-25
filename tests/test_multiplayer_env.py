@@ -14,6 +14,7 @@ so both this file and ``test_self_play.py`` share the same scaffolding.
 from __future__ import annotations
 
 import types
+from typing import Any
 
 import numpy as np
 import pytest
@@ -112,8 +113,12 @@ def test_episode_finished_clears_agents(fake_vizdoom: types.ModuleType) -> None:
     env = make_1v1_env(resize_shape=(84, 84), num_stack=1)
     try:
         env.reset()
-        # Force the host game to report a finished match.
-        env._games["player_0"]._finished = True
+        # Force the host game to report a finished match. ``_games`` is
+        # annotated ``dict[str, vizdoom.DoomGame]``; at runtime the
+        # ``fake_vizdoom`` fixture puts a ``_FakeDoomGame`` there, so go
+        # through ``Any`` to reach the stub-only recording attributes.
+        host: Any = env._games["player_0"]
+        host._finished = True
         _, _, terms, _, _ = env.step({"player_0": 0, "player_1": 0})
         assert all(terms.values())
         assert env.agents == []
@@ -131,7 +136,8 @@ def test_action_table_selects_correct_buttons(fake_vizdoom: types.ModuleType) ->
     try:
         env.reset()
         env.step({"player_0": 7, "player_1": 0})
-        vec = env._games["player_0"].actions_submitted[-1]
+        host: Any = env._games["player_0"]
+        vec = host.actions_submitted[-1]
         assert vec[0] == 1  # MOVE_FORWARD
         assert vec[6] == 1  # ATTACK
         assert sum(vec) == 2
@@ -149,7 +155,8 @@ def test_second_reset_calls_new_episode_on_all_games(
         env.reset()
         env.reset()
         for game in env._games.values():
-            assert game.new_episode_calls == 1
+            stub: Any = game
+            assert stub.new_episode_calls == 1
     finally:
         env.close()
 
