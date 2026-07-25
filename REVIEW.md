@@ -6,6 +6,36 @@ executing the code). Line references are to the state of `main` at the time of r
 
 ---
 
+## Status: Wave 1 is implemented
+
+All ten Wave 1 items have landed. Findings 1.1, 1.3, 1.4, 1.5, 1.6, 1.10, 2.4, 4.1, 4.3,
+5.1, 5.2 and 5.3 are **fixed**; the rest stand as written. The suite went from 126 tests
+(114 in CI) to **261**, and coverage from 48% (44% in CI) to **67%**.
+
+Three of this review's own recommendations were wrong, and implementation caught them:
+
+- **1.5 said to pass `optimize_memory_usage=True`.** SB3 2.9 raises if that is combined
+  with `handle_timeout_termination=True` — which is exactly what makes the 1.1 truncation
+  fix work for DQN. The two Wave 1 items were in direct conflict. Fixed instead by sizing
+  the buffers to the target hardware and adding a pre-allocation guard.
+- **5.1 said to build a `fake_vizdoom` stub for `DoomEnv`.** Unnecessary: ViZDoom now ships
+  manylinux wheels for cp39–cp314, so CI just installs it and `test_env.py` runs against
+  the real binary. Less code, higher fidelity. The premise that CI "cannot install vizdoom"
+  was simply out of date.
+- **5.2 undercounted.** The missing `sb3-contrib` did not only skip the Recurrent PPO test —
+  the `importorskip` was module-level and mid-file, so it dropped nine unrelated DQN/PPO
+  tests with it.
+
+Implementation also turned up things the review missed: the live 1v1 multiplayer test
+segfaults rather than failing (pre-existing, now opt-in via `RL_DOOM_MULTIPLAYER_TESTS=1`);
+`test_reset_clears_bots_before_new_episode` had never run and was broken against the real
+pybind11 `DoomGame`; and the Dreamer budget mismatch in 1.10 was deliberate rather than
+accidental, so the baselines were raised to match rather than the curriculum arms cut.
+
+Each fixed finding is marked **[FIXED]** below with the commit that closed it.
+
+---
+
 ## Executive summary
 
 This is a well-above-average research repo. The artifact discipline is genuinely good —
@@ -95,7 +125,9 @@ a capability as a TODO until a test covers it would catch this whole class.
 
 ### 1. Correctness & RL semantics
 
-#### 1.1 Episode timeouts are bootstrapped as absorbing states for DQN/PPO/RecurrentPPO  `critical` · `small`
+#### 1.1 Episode timeouts are bootstrapped as absorbing states for DQN/PPO/RecurrentPPO  `critical` · `small`  **[FIXED]**
+
+> **Fixed** in `f1cd729` — Report scenario timeouts as truncation, not termination.
 
 **Where:** `src/rl_doom/env.py:328`, `env.py:330-343`; contrast `src/rl_doom/dreamer_env.py:147-157`
 
@@ -188,7 +220,9 @@ better, drop the conditional and have callers pass `torch.as_tensor(obs)` preser
 
 ---
 
-#### 1.3 The deathmatch action table is maintained twice, with different length and ordering  `high` · `small`
+#### 1.3 The deathmatch action table is maintained twice, with different length and ordering  `high` · `small`  **[FIXED]**
+
+> **Fixed** in `d7fd2ad` — Source both deathmatch action tables from one definition.
 
 **Where:** `src/rl_doom/env.py:104-130` (16 actions) vs `src/rl_doom/multiplayer_env.py:40` (14 actions)
 
@@ -219,7 +253,9 @@ action space matches `make_wrapped_env("deathmatch").action_space`.
 
 ---
 
-#### 1.4 Algorithm → SB3 class dispatch exists in three places; the analysis notebook cannot load its own Recurrent PPO runs  `high` · `small`
+#### 1.4 Algorithm → SB3 class dispatch exists in three places; the analysis notebook cannot load its own Recurrent PPO runs  `high` · `small`  **[FIXED]**
+
+> **Fixed** in `df3db6b` — Dispatch algorithm classes through one registry.
 
 **Where:** `src/rl_doom/sb3_utils.py:114-167` (authoritative), `sb3_utils.py:885-893` (video loader), `src/rl_doom/evaluate.py:216` (`load_run`)
 
@@ -250,7 +286,9 @@ the *end* of a multi-hour training run, after training succeeded.
 
 ---
 
-#### 1.5 DQN replay buffers are sized at 5.6–16.9 GB and `optimize_memory_usage` is never set  `critical` · `small`
+#### 1.5 DQN replay buffers are sized at 5.6–16.9 GB and `optimize_memory_usage` is never set  `critical` · `small`  **[FIXED]**
+
+> **Fixed** in `db43608` — Size DQN replay buffers to fit the target hardware.
 
 **Where:** `src/rl_doom/sb3_utils.py:143-166`; all six `configs/dqn_*.yaml`
 
@@ -284,7 +322,9 @@ fast with the number rather than 40 minutes later with a `MemoryError`.
 
 ---
 
-#### 1.6 The deathmatch curricula silently discard the configured `doom_skill`  `medium` · `small`
+#### 1.6 The deathmatch curricula silently discard the configured `doom_skill`  `medium` · `small`  **[FIXED]**
+
+> **Fixed** in `4c74aa2` — Make the curriculum-vs-baseline comparison controlled.
 
 **Where:** `src/rl_doom/sb3_utils.py:700-708`; `configs/*_deathmatch_curriculum.yaml`; `src/rl_doom/curriculum.py:307`
 
@@ -416,7 +456,9 @@ The second is what the configs' tuning rationale assumes, so it is probably the 
 
 ---
 
-#### 1.10 Dreamer curriculum configs give the curriculum arm 1.5–2× the baseline budget  `high` · `small`
+#### 1.10 Dreamer curriculum configs give the curriculum arm 1.5–2× the baseline budget  `high` · `small`  **[FIXED]**
+
+> **Fixed** in `4c74aa2` — Make the curriculum-vs-baseline comparison controlled.
 
 **Where:** `configs/dreamer_deadly_corridor.yaml` vs `configs/dreamer_deadly_corridor_curriculum.yaml`; same for `dreamer_deathmatch*`
 
@@ -513,7 +555,9 @@ README's examples become true.
 
 ---
 
-#### 2.4 Five of six notebooks run Colab-only setup unconditionally, so they cannot execute locally  `high` · `small`
+#### 2.4 Five of six notebooks run Colab-only setup unconditionally, so they cannot execute locally  `high` · `small`  **[FIXED]**
+
+> **Fixed** in `74a54fe` — Make the notebooks runnable outside Colab.
 
 **Where:** cells 3 and 4 of `notebooks/01`, `02`, `03`, `04`, `06`; `README.md` "Google Colab" section
 
@@ -726,7 +770,9 @@ single `setup_google_drive()` call.
 
 ### 4. Robustness & long-run reliability
 
-#### 4.1 `model.learn()` is unguarded — a crash near the end loses the entire run  `critical` · `medium`
+#### 4.1 `model.learn()` is unguarded — a crash near the end loses the entire run  `critical` · `medium`  **[FIXED]**
+
+> **Fixed** in `dadb40a` — Salvage a train_sb3 run when training fails.
 
 **Where:** `src/rl_doom/sb3_utils.py:806-827`
 
@@ -769,7 +815,9 @@ curriculum stage on every promotion, not only at the end.
 
 ---
 
-#### 4.3 The 24-run matrix runner has zero exception handling and writes its CSV only at the end  `high` · `small`
+#### 4.3 The 24-run matrix runner has zero exception handling and writes its CSV only at the end  `high` · `small`  **[FIXED]**
+
+> **Fixed** in `78f5b02` — Isolate matrix cells so one failure doesn't lose the run.
 
 **Where:** `scripts/run_experiment_matrix.py:362-373`
 
@@ -895,7 +943,9 @@ rather than collecting them, and move the env teardown into a `finally`.
 
 ### 5. Testing & CI
 
-#### 5.1 `env.py` — the most important module in the repo — has 0% coverage in CI  `high` · `medium`
+#### 5.1 `env.py` — the most important module in the repo — has 0% coverage in CI  `high` · `medium`  **[FIXED]**
+
+> **Fixed** in `b824917` — Run the real test suite in CI.
 
 **Where:** `tests/test_env.py:9`, `tests/test_dreamer_env.py:11`; contrast `tests/conftest.py:1-60`
 
@@ -954,7 +1004,9 @@ Highest-value test cases, named:
 
 ---
 
-#### 5.2 A misplaced `importorskip` silently disables all 12 agent tests in CI  `high` · `small`
+#### 5.2 A misplaced `importorskip` silently disables all 12 agent tests in CI  `high` · `small`  **[FIXED]**
+
+> **Fixed** in `b824917` — Run the real test suite in CI.
 
 **Where:** `tests/test_agents.py:149`; `.github/workflows/ci.yml:31-35`
 
@@ -1010,7 +1062,9 @@ detect it, and `--no-deps` means a missing declaration never surfaces.
 
 ---
 
-#### 5.3 `mypy` fails on a clean checkout with current dependency versions  `medium` · `small`
+#### 5.3 `mypy` fails on a clean checkout with current dependency versions  `medium` · `small`  **[FIXED]**
+
+> **Fixed** in `b824917` — Run the real test suite in CI.
 
 **What:** On a fresh install of the declared dependencies (torch 2.13, numpy 2.4, Python 3.11):
 
@@ -1249,10 +1303,10 @@ Fix it only if the hand-rolled stack is kept rather than deleted.
 
 Scoped for a solo maintainer. Wave 1 is a weekend; waves 2–3 are incremental.
 
-### Wave 1 — unblock, then guard (~2–3 days)
+### Wave 1 — unblock, then guard  ✅ done
 
-Do these in order; each is small and independently valuable. Items 1–3 are the ones that
-stop a run from being wrong or from running at all.
+All landed. Kept here as the record of what was done and in what order; items 1–3 are the
+ones that stopped a run from being wrong or from running at all.
 
 1. **1.5** — pass `optimize_memory_usage=True` for DQN and add a startup RAM check. *(one line + an assertion; without it, 6 of the 24 matrix runs cannot execute)*
 2. **1.10 + 1.6** — match the two Dreamer curriculum budgets to their baselines; guard the `doom_skill` override so the deathmatch curricula stop discarding it. *(under an hour; unblocks two confounded experiment rows)*
