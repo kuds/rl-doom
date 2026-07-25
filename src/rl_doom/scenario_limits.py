@@ -37,6 +37,95 @@ EPISODE_METRIC_KEYS: tuple[str, ...] = (
     "secrets",
 )
 
+# Curated action sets per scenario. Each inner list is the set of
+# simultaneously pressed buttons for one discrete action, and the list order
+# *is* the action space — index N means the same buttons everywhere.
+#
+# The original ``np.eye`` one-hot layout (one button pressed per action) cannot
+# express compound actions that are required to play these scenarios well —
+# e.g. "move forward while shooting" in Deadly Corridor or "turn while firing"
+# in Defend the Center. Without compound actions the PPO policy on Deadly
+# Corridor collapses to a deterministic "die faster" strategy because no
+# single-button policy can survive the corridor.
+#
+# Button names map 1:1 to ``vizdoom.Button`` enum member names, but are plain
+# strings here so this table stays importable without the ViZDoom binary. Any
+# name not in a scenario's ``available_buttons`` raises at env init.
+#
+# This lives in scenario_limits rather than env.py because both
+# :mod:`rl_doom.env` and :mod:`rl_doom.multiplayer_env` build action tables
+# from it, and they must agree exactly: the multiplayer docstring promises
+# that single-player checkpoints load directly for self-play, which requires
+# an identical index -> button mapping. They previously kept separate copies
+# that had drifted in both length and ordering.
+SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
+    "basic": [
+        ["MOVE_LEFT"],
+        ["MOVE_RIGHT"],
+        ["ATTACK"],
+        # Strafe while firing — lets the agent track a moving target.
+        ["MOVE_LEFT", "ATTACK"],
+        ["MOVE_RIGHT", "ATTACK"],
+    ],
+    "deadly_corridor": [
+        # Pure movement / turning (still useful for navigation + aiming).
+        ["MOVE_FORWARD"],
+        ["MOVE_BACKWARD"],
+        ["TURN_LEFT"],
+        ["TURN_RIGHT"],
+        ["MOVE_LEFT"],
+        ["MOVE_RIGHT"],
+        # Stationary attack.
+        ["ATTACK"],
+        # The compound actions that actually let the agent survive:
+        # push forward while firing / strafing / aiming.
+        ["MOVE_FORWARD", "ATTACK"],
+        ["MOVE_FORWARD", "MOVE_LEFT"],
+        ["MOVE_FORWARD", "MOVE_RIGHT"],
+        ["MOVE_FORWARD", "TURN_LEFT"],
+        ["MOVE_FORWARD", "TURN_RIGHT"],
+        # Fire while turning to track imps on either side.
+        ["TURN_LEFT", "ATTACK"],
+        ["TURN_RIGHT", "ATTACK"],
+    ],
+    "defend_the_center": [
+        ["TURN_LEFT"],
+        ["TURN_RIGHT"],
+        ["ATTACK"],
+        # Killer compound: rotate while firing to sweep the arena.
+        ["TURN_LEFT", "ATTACK"],
+        ["TURN_RIGHT", "ATTACK"],
+    ],
+    "deathmatch": [
+        # Deathmatch needs both navigation and combat. We restrict to the
+        # binary movement/attack buttons and skip the delta + weapon-select
+        # buttons in deathmatch.cfg — delta buttons expect continuous values
+        # rather than a 0/1 press, and weapon switching adds a large branching
+        # factor that's better left for a policy with a more expressive
+        # action space. SPEED is included so the agent can run while chasing.
+        ["MOVE_FORWARD"],
+        ["MOVE_BACKWARD"],
+        ["TURN_LEFT"],
+        ["TURN_RIGHT"],
+        ["MOVE_LEFT"],
+        ["MOVE_RIGHT"],
+        ["ATTACK"],
+        # Fire while moving/turning to track and engage opponents.
+        ["MOVE_FORWARD", "ATTACK"],
+        ["MOVE_LEFT", "ATTACK"],
+        ["MOVE_RIGHT", "ATTACK"],
+        ["TURN_LEFT", "ATTACK"],
+        ["TURN_RIGHT", "ATTACK"],
+        # Navigate while aiming.
+        ["MOVE_FORWARD", "TURN_LEFT"],
+        ["MOVE_FORWARD", "TURN_RIGHT"],
+        # Sprint for closing distance / escaping.
+        ["SPEED", "MOVE_FORWARD"],
+        ["SPEED", "MOVE_FORWARD", "ATTACK"],
+    ],
+}
+
+
 # Human-readable labels rendered in ``stage_summary.txt``. Kept alongside
 # the keys so the summary lines stay in lock-step with the metric list.
 EPISODE_METRIC_LABELS: dict[str, str] = {

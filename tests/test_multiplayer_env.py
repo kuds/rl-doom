@@ -4,8 +4,10 @@ Two layers:
 
 * Pure-logic tests stub out ``vizdoom`` so they run without the native binary
   and exercise reward aggregation, action routing, and PettingZoo contracts.
-* An integration smoke test boots a real 1v1 match when the ``vizdoom`` package
-  is installed; it is skipped otherwise so CI on vanilla machines stays green.
+* An integration smoke test boots a real 1v1 match. It is opt-in via
+  ``RL_DOOM_MULTIPLAYER_TESTS=1`` because ViZDoom multiplayer needs loopback
+  networking that most CI sandboxes lack, and fails there by segfaulting
+  rather than raising.
 
 The fake ``vizdoom`` module + ``fake_vizdoom`` fixture live in ``conftest.py``
 so both this file and ``test_self_play.py`` share the same scaffolding.
@@ -13,9 +15,11 @@ so both this file and ``test_self_play.py`` share the same scaffolding.
 
 from __future__ import annotations
 
+import os
 import types
 from typing import Any
 
+import gymnasium as gym
 import numpy as np
 import pytest
 
@@ -127,19 +131,24 @@ def test_episode_finished_clears_agents(fake_vizdoom: types.ModuleType) -> None:
 
 
 def test_action_table_selects_correct_buttons(fake_vizdoom: types.ModuleType) -> None:
-    """Action id 7 in DEATHMATCH_ACTIONS is MOVE_FORWARD + ATTACK: bits
-    0 (MOVE_FORWARD) and 6 (ATTACK) must be the ones set in the submitted
-    button vector."""
-    from rl_doom.multiplayer_env import make_1v1_env
+    """The submitted button vector must set exactly the combo's buttons.
+
+    Indices are resolved through ``button_index`` rather than hardcoded: the
+    action id -> button mapping is the contract, the positions within ViZDoom's
+    button vector are an implementation detail of the scenario cfg.
+    """
+    from rl_doom.multiplayer_env import DEATHMATCH_ACTIONS, make_1v1_env
+
+    action_id = DEATHMATCH_ACTIONS.index(["MOVE_FORWARD", "ATTACK"])
 
     env = make_1v1_env(resize_shape=(84, 84), num_stack=1)
     try:
         env.reset()
-        env.step({"player_0": 7, "player_1": 0})
+        env.step({"player_0": action_id, "player_1": 0})
         host: Any = env._games["player_0"]
         vec = host.actions_submitted[-1]
-        assert vec[0] == 1  # MOVE_FORWARD
-        assert vec[6] == 1  # ATTACK
+        assert vec[host.button_index("MOVE_FORWARD")] == 1
+        assert vec[host.button_index("ATTACK")] == 1
         assert sum(vec) == 2
     finally:
         env.close()
@@ -168,6 +177,35 @@ def test_rejects_mismatched_teams_length(fake_vizdoom: types.ModuleType) -> None
         DoomMultiplayerEnv(num_players=4, teams=["red", "blue"])
 
 
+def test_deathmatch_action_space_matches_single_player() -> None:
+    """Self-play requires the same action space as single-player deathmatch.
+
+    ``multiplayer_env``'s docstring promises that "models trained single-agent
+    can be loaded directly for self-play". That holds only if both envs agree
+    on the action-space *size* and on what each index means — an SB3 zip
+    records its action space, so a mismatch in size fails to load outright, and
+    a mismatch in ordering silently remaps the policy's outputs.
+
+    The two tables were maintained separately and had drifted to 14 vs 16
+    entries with indices 8/9 and 12/13 swapped. Runs without the fake fixture:
+    it compares the shared source table against the real scenario cfg.
+    """
+    pytest.importorskip("vizdoom")
+
+    from rl_doom.env import make_wrapped_env
+    from rl_doom.multiplayer_env import DEATHMATCH_ACTIONS
+    from rl_doom.scenario_limits import SCENARIO_ACTION_SETS
+
+    assert DEATHMATCH_ACTIONS == SCENARIO_ACTION_SETS["deathmatch"]
+
+    single = make_wrapped_env("deathmatch", resize_shape=(84, 84), num_stack=1)
+    try:
+        assert isinstance(single.action_space, gym.spaces.Discrete)
+        assert int(single.action_space.n) == len(DEATHMATCH_ACTIONS)
+    finally:
+        single.close()
+
+
 def test_rejects_num_stack_without_resize(fake_vizdoom: types.ModuleType) -> None:
     from rl_doom.multiplayer_env import DoomMultiplayerEnv
 
@@ -180,15 +218,26 @@ def test_rejects_num_stack_without_resize(fake_vizdoom: types.ModuleType) -> Non
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    os.environ.get("RL_DOOM_MULTIPLAYER_TESTS") != "1",
+    reason=(
+        "ViZDoom multiplayer needs loopback networking and one child process "
+        "per seat. Where that is unavailable — most CI sandboxes and "
+        "containers — the host/client handshake does not raise, it "
+        "segfaults, taking the whole pytest process down with it (see "
+        "DoomMultiplayerEnv._start_games, which waits on fut.result() with no "
+        "timeout). Opt in with RL_DOOM_MULTIPLAYER_TESTS=1 on a machine where "
+        "multiplayer works."
+    ),
+)
 def test_1v1_live_smoke() -> None:
-    pytest.importorskip("vizdoom")
-    pytest.importorskip("pettingzoo")
     """Boots a real 1v1 match and steps a few random actions.
 
     Kept deliberately short - goal is to catch init/teardown breakage, not
     exercise long trajectories. ``sv_spawnfarthest`` + a 1-minute timelimit
     keep the match cheap on CI / Colab.
     """
+    pytest.importorskip("pettingzoo")
     from rl_doom.multiplayer_env import make_1v1_env
 
     env = make_1v1_env(time_limit=1.0, frame_skip=4, resize_shape=(84, 84), num_stack=4)

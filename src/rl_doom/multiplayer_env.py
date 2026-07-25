@@ -33,25 +33,31 @@ import numpy as np
 import vizdoom
 from pettingzoo import ParallelEnv
 
-# Default compound action set for deathmatch-style multiplayer. Mirrors the
-# curated sets in ``rl_doom.env`` but tuned for free-movement combat: covers
-# strafe, turn-while-firing, and forward-while-firing compounds so a policy
-# can aim, dodge, and chase without relying on raw one-hot buttons.
+# Imported from ``scenario_limits`` rather than ``rl_doom.env`` on purpose:
+# env.py builds a ``vizdoom.GameVariable`` table at module load, so importing
+# it here would drag that into every consumer — including the tests that swap
+# in a fake ``vizdoom`` module.
+from rl_doom.scenario_limits import SCENARIO_ACTION_SETS
+
+# Default compound action set for deathmatch-style multiplayer.
+#
+# Sourced from the single-player table rather than restated here. This
+# module's docstring promises that "models trained single-agent can be loaded
+# directly for self-play", and that requires the two envs to expose the *same*
+# action space — the same length, and the same index -> button mapping.
+#
+# Two hand-maintained copies had already drifted: this one had 14 entries
+# against env.py's 16 (missing both SPEED compounds), with indices 8/9 and
+# 12/13 swapped between "MOVE_x + ATTACK" and "MOVE_FORWARD + TURN_x". A
+# single-player checkpoint could not be loaded as an opponent at all
+# (Discrete(16) vs Discrete(14)), and had it been reshaped it would have
+# strafed where it meant to turn.
+#
+# Copied element-wise so a caller mutating one table cannot silently reshape
+# the other; ``test_deathmatch_action_space_matches_single_player`` asserts the
+# two stay equivalent.
 DEATHMATCH_ACTIONS: list[list[str]] = [
-    ["MOVE_FORWARD"],
-    ["MOVE_BACKWARD"],
-    ["TURN_LEFT"],
-    ["TURN_RIGHT"],
-    ["MOVE_LEFT"],
-    ["MOVE_RIGHT"],
-    ["ATTACK"],
-    ["MOVE_FORWARD", "ATTACK"],
-    ["MOVE_FORWARD", "TURN_LEFT"],
-    ["MOVE_FORWARD", "TURN_RIGHT"],
-    ["TURN_LEFT", "ATTACK"],
-    ["TURN_RIGHT", "ATTACK"],
-    ["MOVE_LEFT", "ATTACK"],
-    ["MOVE_RIGHT", "ATTACK"],
+    list(combo) for combo in SCENARIO_ACTION_SETS["deathmatch"]
 ]
 
 
