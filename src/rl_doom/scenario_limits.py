@@ -126,6 +126,31 @@ SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
 }
 
 
+# Plausible magnitude of a per-episode eval reward, per scenario, as
+# ``(lo, hi)``. Deliberately wide — this is a units check, not a performance
+# target. The targets themselves live in ``BENCHMARKS.md``.
+#
+# It exists because a curriculum's ``promote_at`` is compared against
+# ``EvalCallback.last_mean_reward``, and nothing tied those two to the same
+# units. The deathmatch curricula shipped with thresholds of 3.0 and 5.0 —
+# written as though they were frag counts — against an eval scale that runs
+# 160-195, so every promotion fired on the first eligible eval and the
+# curriculum did nothing. It took reading a finished run's curriculum.json to
+# notice.
+#
+# Bounds are drawn from BENCHMARKS.md plus observed 2026-04 runs:
+#   basic              eval 85-95 when solved
+#   deadly_corridor    eval 1500-2300; ~2280 = corridor cleared
+#   defend_the_center  eval = kills - 1, theoretical max 25
+#   deathmatch         shaped scenario reward, observed 162-194
+SCENARIO_EVAL_REWARD_RANGE: dict[str, tuple[float, float]] = {
+    "basic": (10.0, 200.0),
+    "deadly_corridor": (100.0, 3000.0),
+    "defend_the_center": (1.0, 40.0),
+    "deathmatch": (50.0, 1000.0),
+}
+
+
 # Human-readable labels rendered in ``stage_summary.txt``. Kept alongside
 # the keys so the summary lines stay in lock-step with the metric list.
 EPISODE_METRIC_LABELS: dict[str, str] = {

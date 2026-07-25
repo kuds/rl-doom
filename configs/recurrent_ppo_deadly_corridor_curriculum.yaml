@@ -33,7 +33,19 @@ training:
 eval:
   eval_freq: 25000
   n_episodes: 10
-
+  # Stop once this many consecutive evals pass without a new best, so a run
+  # that has plateaued stops burning compute. Patience resets on a curriculum
+  # promotion (a harder rung legitimately scores lower). EvalCallback keeps the
+  # best checkpoint either way, so this only skips steps.
+  #
+  # Calibrated against the 2026-04 runs, which all peaked early and then
+  # declined: DQN/deadly_corridor best @ 400k of 2.5M then -40%;
+  # PPO/deathmatch best @ 250k of 2.5M then -14%. At these eval_freq values a
+  # patience of 20 would have ended both around 40% of budget while leaving
+  # PPO/deadly_corridor (peak @ 1.675M) untouched.
+  # Set to null to always train the full budget.
+  early_stop_patience: 20
+  early_stop_min_evals: 10
 policy:
   features_dim: 512
   net_arch: []

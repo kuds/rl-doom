@@ -47,6 +47,7 @@ from rl_doom.curriculum import (
     SkillCurriculumCallback,
     parse_curriculum_config,
 )
+from rl_doom.early_stop import StopOnEvalPlateau
 from rl_doom.paths import mark_run_status, update_latest_symlink
 from rl_doom.scenario_limits import EPISODE_METRIC_KEYS
 
@@ -806,6 +807,8 @@ def train_sb3(
     policy_kwargs: dict[str, Any] | None = None,
     curriculum: dict[str, Any] | list[CurriculumStage] | None = None,
     extra_callbacks: list[BaseCallback] | None = None,
+    early_stop_patience: int | None = None,
+    early_stop_min_evals: int = 10,
 ) -> dict[str, Any]:
     """Train a single SB3 model end-to-end and write *all* artifacts now.
 
@@ -836,6 +839,16 @@ def train_sb3(
         Additional SB3 callbacks appended after the built-in eval /
         checkpoint / termination / curriculum ones. Useful for run-specific
         instrumentation without forking this function.
+    early_stop_patience :
+        Stop once this many consecutive evals pass without a new best eval
+        reward. ``None`` (default) trains the full budget. Patience is
+        measured within a curriculum rung — a promotion resets it, since a
+        harder rung legitimately scores lower. The best checkpoint is saved by
+        ``EvalCallback`` regardless, so stopping early costs nothing but the
+        steps it skips.
+    early_stop_min_evals :
+        Minimum evals on a rung before ``early_stop_patience`` can fire, so a
+        slow start is not mistaken for a plateau.
     curriculum :
         Optional skill-curriculum specification. Accepts either a raw YAML
         dict (``{"stages": [...], "min_evals_between_promotions": ...}``) or
@@ -971,6 +984,18 @@ def train_sb3(
             eval_cb, curriculum_stages, verbose=verbose, **curriculum_kwargs,
         )
         callbacks.append(curriculum_cb)
+    # After the curriculum callback so that on any given step it sees the
+    # promotion that step produced, rather than reacting one eval late.
+    early_stop_cb: StopOnEvalPlateau | None = None
+    if early_stop_patience:
+        early_stop_cb = StopOnEvalPlateau(
+            eval_cb,
+            patience=early_stop_patience,
+            min_evals=early_stop_min_evals,
+            curriculum_cb=curriculum_cb,
+            verbose=1,
+        )
+        callbacks.append(early_stop_cb)
     # Appended last so a caller's callback sees the state the built-in ones
     # have already updated.
     if extra_callbacks:
@@ -1152,7 +1177,13 @@ def train_sb3(
     total_eps = sum(termination_tracker.counts.values())
     goal_count = termination_tracker.counts.get("goal_reached", 0)
     success_rate = (goal_count / total_eps) if total_eps else None
-    mark_run_status(run_dir, status="completed")
+    mark_run_status(
+        run_dir,
+        status="completed",
+        stopped_early=bool(early_stop_cb and early_stop_cb.stopped_early),
+        stopped_at_step=early_stop_cb.stopped_at_step if early_stop_cb else None,
+        completed_timesteps=steps_done,
+    )
     update_latest_symlink(scenario, algo.lower(), run_dir)
 
     # Write stage_summary.txt for this run, in-process (no subprocess).
@@ -1177,6 +1208,8 @@ def train_sb3(
         "curriculum_promotions": (
             curriculum_cb.promotions if curriculum_cb else None
         ),
+        "stopped_early": bool(early_stop_cb and early_stop_cb.stopped_early),
+        "stopped_at_step": early_stop_cb.stopped_at_step if early_stop_cb else None,
     }
 
     if on_complete is not None:

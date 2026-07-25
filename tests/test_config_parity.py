@@ -172,3 +172,50 @@ def test_shipped_curricula_keep_their_baseline_env_settings(path: Path) -> None:
         )
     if stages[0].num_bots is None:
         assert bots == int(baseline_env.get("num_bots", 0))
+
+
+# ---------------------------------------------------------------------------
+# Promotion thresholds vs the reward scale they are compared against
+#
+# `promote_at` is checked against EvalCallback.last_mean_reward, but nothing
+# tied the two to the same units. The deathmatch curricula shipped thresholds
+# of 3.0 and 5.0 — frag counts — against an eval scale of 160-195, so every
+# promotion fired on the first eligible eval and the curriculum did nothing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", CURRICULUM_CONFIGS, ids=lambda p: p.name)
+def test_promote_at_is_on_the_scenario_reward_scale(path: Path) -> None:
+    from rl_doom.scenario_limits import SCENARIO_EVAL_REWARD_RANGE
+
+    cfg = _load(path)
+    scenario = cfg["scenario"]
+    assert scenario in SCENARIO_EVAL_REWARD_RANGE, (
+        f"{scenario} has no declared eval-reward range; add one to "
+        f"scenario_limits.SCENARIO_EVAL_REWARD_RANGE so thresholds can be checked"
+    )
+    lo, hi = SCENARIO_EVAL_REWARD_RANGE[scenario]
+
+    for i, stage in enumerate(cfg["curriculum"]["stages"]):
+        threshold = stage.get("promote_at")
+        if threshold is None:
+            continue  # terminal stage
+        assert lo <= threshold <= hi, (
+            f"{path.name} stage {i} has promote_at={threshold}, outside the "
+            f"plausible eval-reward range [{lo}, {hi}] for {scenario!r}. A "
+            f"threshold below the scale promotes on the first eval and makes "
+            f"the curriculum a no-op; one above it never promotes at all."
+        )
+
+
+@pytest.mark.parametrize("path", CURRICULUM_CONFIGS, ids=lambda p: p.name)
+def test_only_the_terminal_stage_omits_a_threshold(path: Path) -> None:
+    """A non-terminal stage without a threshold can never promote."""
+    stages = _load(path)["curriculum"]["stages"]
+    for i, stage in enumerate(stages[:-1]):
+        assert stage.get("promote_at") is not None, (
+            f"{path.name} non-terminal stage {i} has no promote_at"
+        )
+    assert stages[-1].get("promote_at") is None, (
+        f"{path.name} terminal stage should not define promote_at"
+    )

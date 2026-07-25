@@ -213,6 +213,16 @@ def generate_run_summary(run_dir: Path) -> str:
         f"Timesteps:      {total_steps_str}",
     ]
 
+    # Make a shortened run legible: without this, "Timesteps: 900,000" against
+    # a config saying 2,500,000 reads as a crash rather than a plateau.
+    requested = cfg.get("hyperparams", {}).get("total_timesteps")
+    if cfg.get("stopped_early") and requested:
+        lines.append(
+            f"Early stop:     yes — plateaued at "
+            f"{_fmt_number(cfg.get('stopped_at_step'))} of "
+            f"{_fmt_number(requested)} requested",
+        )
+
     if wall_time > 0:
         lines.append(f"Duration:       {_fmt_duration(wall_time)}")
         if fps > 0:

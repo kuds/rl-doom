@@ -214,3 +214,44 @@ def test_keyboard_interrupt_is_salvaged_and_reraised(
     assert (run_dir / "checkpoints" / "final.zip").exists()
     for vec in patched_env:
         assert vec.closed
+
+
+# ---------------------------------------------------------------------------
+# Early stopping, end to end
+# ---------------------------------------------------------------------------
+
+
+def test_early_stop_shortens_a_plateaued_run(
+    tmp_path: Path, patched_env: list[Any],
+) -> None:
+    """A run whose eval never improves must end before its budget.
+
+    The synthetic env returns a constant reward, so every eval ties and the
+    plateau counter runs. Without early stopping the run trains the full
+    budget; with it, training_jobs records fewer steps than requested.
+    """
+    run_dir = tmp_path / "run"
+    result = _train(
+        run_dir,
+        total_timesteps=4_000,
+        eval_freq=200,
+        eval_episodes=1,
+        early_stop_patience=2,
+        early_stop_min_evals=2,
+    )
+
+    assert result["stopped_early"] is True
+    assert result["stopped_at_step"] is not None
+    assert result["stopped_at_step"] < 4_000
+    # Artifacts are still written in full — stopping is not failing.
+    assert (run_dir / "checkpoints" / "final.zip").exists()
+    assert (run_dir / "metrics" / "training.npz").exists()
+
+
+def test_no_early_stop_by_default(tmp_path: Path, patched_env: list[Any]) -> None:
+    """Omitting the knob must train the full budget, as before."""
+    run_dir = tmp_path / "run"
+    result = _train(run_dir, total_timesteps=1_000, eval_freq=200, eval_episodes=1)
+
+    assert result["stopped_early"] is False
+    assert result["stopped_at_step"] is None
