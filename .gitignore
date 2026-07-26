@@ -17,6 +17,17 @@ env/
 # Training artifacts
 training_jobs/
 analysis/
+# Combined roll-up written to the repo root by scripts/generate_summary.py
+stage_summary.txt
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # OS
 .DS_Store

@@ -15,10 +15,16 @@ import gymnasium as gym
 import numpy as np
 import vizdoom
 
-# Re-exported so ``rl_doom.env.MAX_NUM_BOTS`` keeps working for existing callers;
-# the canonical definition lives in ``rl_doom.scenario_limits`` to keep it free
-# of the ``import vizdoom`` above and let ``rl_doom.curriculum`` share it.
-from rl_doom.scenario_limits import EPISODE_METRIC_KEYS, MAX_NUM_BOTS
+# Re-exported so ``rl_doom.env.MAX_NUM_BOTS`` / ``.SCENARIO_ACTION_SETS`` keep
+# working for existing callers; the canonical definitions live in
+# ``rl_doom.scenario_limits`` to keep them free of the ``import vizdoom`` above,
+# so ``rl_doom.curriculum`` and ``rl_doom.multiplayer_env`` can share them
+# without pulling the binary in.
+from rl_doom.scenario_limits import (
+    EPISODE_METRIC_KEYS,
+    MAX_NUM_BOTS,
+    SCENARIO_ACTION_SETS,
+)
 
 # Mapping from the vizdoom-free ``EPISODE_METRIC_KEYS`` to the game variables
 # that back them. Populating the info dict off this dict keeps env.py and the
@@ -49,85 +55,6 @@ SCENARIO_MAP: dict[str, str] = {
     "health_gathering": "health_gathering.cfg",
     "my_way_home": "my_way_home.cfg",
     "predict_position": "predict_position.cfg",
-}
-
-
-# Curated action sets per scenario. Each inner list is the set of simultaneously
-# pressed buttons for one discrete action. The original ``np.eye`` one-hot
-# layout (one button pressed per action) cannot express compound actions that
-# are required to play these scenarios well — e.g. "move forward while
-# shooting" in Deadly Corridor or "turn while firing" in Defend the Center.
-# Without compound actions the PPO policy on Deadly Corridor collapses to a
-# deterministic "die faster" strategy because no single-button policy can
-# survive the corridor.
-#
-# Button names map 1:1 to ``vizdoom.Button`` enum member names. Any name that
-# is not in the scenario's ``available_buttons`` list raises at init time.
-SCENARIO_ACTION_SETS: dict[str, list[list[str]]] = {
-    "basic": [
-        ["MOVE_LEFT"],
-        ["MOVE_RIGHT"],
-        ["ATTACK"],
-        # Strafe while firing — lets the agent track a moving target.
-        ["MOVE_LEFT", "ATTACK"],
-        ["MOVE_RIGHT", "ATTACK"],
-    ],
-    "deadly_corridor": [
-        # Pure movement / turning (still useful for navigation + aiming).
-        ["MOVE_FORWARD"],
-        ["MOVE_BACKWARD"],
-        ["TURN_LEFT"],
-        ["TURN_RIGHT"],
-        ["MOVE_LEFT"],
-        ["MOVE_RIGHT"],
-        # Stationary attack.
-        ["ATTACK"],
-        # The compound actions that actually let the agent survive:
-        # push forward while firing / strafing / aiming.
-        ["MOVE_FORWARD", "ATTACK"],
-        ["MOVE_FORWARD", "MOVE_LEFT"],
-        ["MOVE_FORWARD", "MOVE_RIGHT"],
-        ["MOVE_FORWARD", "TURN_LEFT"],
-        ["MOVE_FORWARD", "TURN_RIGHT"],
-        # Fire while turning to track imps on either side.
-        ["TURN_LEFT", "ATTACK"],
-        ["TURN_RIGHT", "ATTACK"],
-    ],
-    "defend_the_center": [
-        ["TURN_LEFT"],
-        ["TURN_RIGHT"],
-        ["ATTACK"],
-        # Killer compound: rotate while firing to sweep the arena.
-        ["TURN_LEFT", "ATTACK"],
-        ["TURN_RIGHT", "ATTACK"],
-    ],
-    "deathmatch": [
-        # Deathmatch needs both navigation and combat. We restrict to the
-        # binary movement/attack buttons and skip the delta + weapon-select
-        # buttons in deathmatch.cfg — delta buttons expect continuous values
-        # rather than a 0/1 press, and weapon switching adds a large branching
-        # factor that's better left for a policy with a more expressive
-        # action space. SPEED is included so the agent can run while chasing.
-        ["MOVE_FORWARD"],
-        ["MOVE_BACKWARD"],
-        ["TURN_LEFT"],
-        ["TURN_RIGHT"],
-        ["MOVE_LEFT"],
-        ["MOVE_RIGHT"],
-        ["ATTACK"],
-        # Fire while moving/turning to track and engage opponents.
-        ["MOVE_FORWARD", "ATTACK"],
-        ["MOVE_LEFT", "ATTACK"],
-        ["MOVE_RIGHT", "ATTACK"],
-        ["TURN_LEFT", "ATTACK"],
-        ["TURN_RIGHT", "ATTACK"],
-        # Navigate while aiming.
-        ["MOVE_FORWARD", "TURN_LEFT"],
-        ["MOVE_FORWARD", "TURN_RIGHT"],
-        # Sprint for closing distance / escaping.
-        ["SPEED", "MOVE_FORWARD"],
-        ["SPEED", "MOVE_FORWARD", "ATTACK"],
-    ],
 }
 
 
@@ -263,6 +190,10 @@ class DoomEnv(gym.Env):
         self.observation_space = gym.spaces.Box(
             low=0, high=255, shape=self._obs_shape, dtype=np.uint8,
         )
+        # Last frame ViZDoom actually rendered — see ``_get_obs``. Seeded with
+        # a black frame so the very first read is well-defined even if the
+        # game has no state yet.
+        self._last_obs: np.ndarray = np.zeros(self._obs_shape, dtype=np.uint8)
 
     # ------------------------------------------------------------------
 
@@ -275,9 +206,16 @@ class DoomEnv(gym.Env):
             # handle that case defensively so the observation is always HWC.
             if buf.ndim == 3 and buf.shape[0] == 3 and buf.shape[-1] != 3:
                 buf = buf.transpose(1, 2, 0)
+            # Keep a copy for the terminal step: ViZDoom drops the state once
+            # the episode is finished, and on a *truncated* episode SB3 feeds
+            # the final observation to the value function to bootstrap
+            # ``V(s')``. Handing it a black frame would bootstrap from a state
+            # the agent never saw. ``copy`` because ViZDoom reuses the buffer.
+            self._last_obs = buf.copy()
             return buf
-        # After episode ends the state can be None; return a black frame.
-        return np.zeros(self._obs_shape, dtype=np.uint8)
+        # The episode is over and ViZDoom has torn down the state. Return the
+        # last frame the agent actually observed rather than a black one.
+        return self._last_obs
 
     def reset(
         self,
@@ -304,11 +242,36 @@ class DoomEnv(gym.Env):
         self, action: int,
     ) -> tuple[np.ndarray, SupportsFloat, bool, bool, dict[str, Any]]:
         reward = self.game.make_action(self._actions[action], self._frame_skip)
-        terminated = self.game.is_episode_finished()
+        episode_over = self.game.is_episode_finished()
         obs = self._get_obs()
         info: dict[str, Any] = {}
-        if terminated:
+        terminated = episode_over
+        truncated = False
+        if episode_over:
             info["termination_reason"] = self._classify_termination()
+            # Gymnasium draws a distinction ViZDoom does not: ``terminated``
+            # means the MDP reached an absorbing state, ``truncated`` means an
+            # external clock cut the episode short. ViZDoom reports both as
+            # "episode finished", so recover the difference from the reason we
+            # just classified.
+            #
+            # This matters for the value function, not just for bookkeeping. On
+            # a timeout the agent's future return is *not* zero — it simply
+            # stopped being observed — so the target must bootstrap V(s')
+            # rather than truncate to the immediate reward. SB3 keys that
+            # behaviour off ``truncated`` (DQN via the replay buffer's
+            # ``handle_timeout_termination``, PPO via ``terminal_observation``
+            # in ``collect_rollouts``). Reporting a timeout as ``terminated``
+            # teaches the policy that running out the clock is an absorbing
+            # state, which biases every scenario with a short episode_timeout —
+            # i.e. all four this repo trains.
+            #
+            # ``rl_doom.dreamer_env`` already recovered this distinction from
+            # ``termination_reason`` for the world model; doing it here means
+            # every consumer gets it, and dreamer_env's workaround becomes a
+            # simple pass-through.
+            if info["termination_reason"] == "timeout":
+                terminated, truncated = False, True
             info["episode_tics"] = int(self.game.get_episode_time())
             try:
                 info["final_health"] = float(
@@ -325,7 +288,7 @@ class DoomEnv(gym.Env):
                     info[key] = int(self.game.get_game_variable(gv))
                 except Exception:  # noqa: BLE001 — game var may be unavailable
                     info[key] = 0
-        return obs, reward, terminated, False, info
+        return obs, reward, terminated, truncated, info
 
     def _classify_termination(self) -> str:
         """Label why the current episode ended.
@@ -342,7 +305,7 @@ class DoomEnv(gym.Env):
             return "timeout"
         return "goal_reached"
 
-    def render(self) -> np.ndarray:  # type: ignore[override]
+    def render(self) -> np.ndarray:
         # Gymnasium's base signature returns RenderFrame | list | None;
         # we always produce an RGB ndarray, which is a valid RenderFrame
         # but narrower than the abstract type.

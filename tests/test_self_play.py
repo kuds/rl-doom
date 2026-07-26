@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import types
 from pathlib import Path
+from typing import Any
 
 import gymnasium as gym
 import numpy as np
@@ -182,7 +183,8 @@ def test_wrapper_routes_opponent_action_and_forwards_learner_reward(
         assert obs.shape == (84, 84)
         # Opponent's game should have received a button vector whose action
         # index is 5 (from the fake policy's fixed_action).
-        submitted = base._games["player_1"].actions_submitted[-1]
+        opponent_game: Any = base._games["player_1"]
+        submitted = opponent_game.actions_submitted[-1]
         expected = base._action_tables["player_1"][5]
         assert submitted == expected
         assert info["frags"] == 2

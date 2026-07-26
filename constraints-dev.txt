@@ -1,0 +1,54 @@
+# Upper bounds for the CI toolchain and the libraries whose type stubs and
+# runtime behaviour the checks depend on.
+#
+# Why this file exists
+# --------------------
+# ``pyproject.toml`` deliberately declares loose ``>=`` requirements so the
+# package stays installable alongside whatever a user already has. That is the
+# right contract for a library, but it makes CI non-reproducible: a new mypy or
+# a new stable-baselines3 can turn a green build red without a commit, and
+# ``warn_unused_ignores = true`` means even a *stub improvement* upstream breaks
+# the type check (a ``# type: ignore`` that was necessary becomes "unused").
+#
+# CI installs with ``-c constraints-dev.txt`` so the checks run against a known
+# set. Nothing here changes what ``pip install rl-doom`` resolves for a user.
+#
+# Bumping
+# -------
+# Raise a bound deliberately, in its own commit, so an upstream break is
+# attributable. ``pip install -e ".[dev]"`` without ``-c`` reproduces the
+# unconstrained resolution if you want to see what would break next.
+
+# Checks. `warn_unused_ignores` makes mypy version-sensitive in both
+# directions, so this is the most important pin in the file.
+mypy>=2.3,<2.4
+ruff>=0.16,<0.17
+pytest>=9.1,<10
+
+# RL stack. SB3 and sb3-contrib move in lockstep and their public API is what
+# `rl_doom.sb3_utils` is written against.
+stable-baselines3>=2.9,<3
+sb3-contrib>=2.9,<3
+gymnasium>=1.3,<2
+pettingzoo>=1.26,<2
+
+# ViZDoom publishes manylinux wheels for cp39-cp314, so CI needs no native
+# toolchain. Pinned to a minor range because the scenario .cfg files and the
+# GameVariable enum this repo reads are part of its distribution.
+vizdoom>=1.3,<1.4
+
+# Deliberately NOT pinned here: numpy and torch.
+#
+# A floor of `numpy>=2.4` once broke the lowest leg of the CI matrix outright:
+# numpy 2.3+ requires Python >=3.11, so on the then-supported 3.10 the
+# constraint was unsatisfiable and pip failed with ResolutionImpossible before
+# a single test ran. Nothing about reproducible checks needed that floor — what
+# makes the build version-sensitive is mypy (see above), not the numerics.
+# `pyproject.toml` already declares the real requirement (`numpy`,
+# `torch>=2.0`), and this file only narrows what CI resolves.
+#
+# The floor is 3.11 now, so that particular pin would resolve — but numpy 2.5
+# needs >=3.12, so it would break 3.11 the same way. The rule stands.
+#
+# Any pin added here must hold across every Python in the matrix. Add an
+# environment marker rather than a bare floor if that is not true.

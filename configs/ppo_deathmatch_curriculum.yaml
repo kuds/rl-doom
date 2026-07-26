@@ -55,7 +55,19 @@ training:
 eval:
   eval_freq: 25000
   n_episodes: 10
-
+  # Stop once this many consecutive evals pass without a new best, so a run
+  # that has plateaued stops burning compute. Patience resets on a curriculum
+  # promotion (a harder rung legitimately scores lower). EvalCallback keeps the
+  # best checkpoint either way, so this only skips steps.
+  #
+  # Calibrated against the 2026-04 runs, which all peaked early and then
+  # declined: DQN/deadly_corridor best @ 400k of 2.5M then -40%;
+  # PPO/deathmatch best @ 250k of 2.5M then -14%. At these eval_freq values a
+  # patience of 20 would have ended both around 40% of budget while leaving
+  # PPO/deadly_corridor (peak @ 1.675M) untouched.
+  # Set to null to always train the full budget.
+  early_stop_patience: 20
+  early_stop_min_evals: 10
 policy:
   features_dim: 512
   net_arch: []
@@ -74,11 +86,32 @@ policy:
 # min_evals_between_promotions=2 avoids jumping stages on a single
 # lucky eval; the callback requires at least two eval windows above
 # threshold before promoting.
+# Promotion thresholds are the raw eval mean reward — deathmatch.cfg's shaped
+# scenario reward, NOT a frag count. They were 3.0 and 5.0, which read as
+# "3 frags" / "5 frags" but sit ~50x below the scale EvalCallback reports, so
+# every promotion fired at the earliest allowed eval and the curriculum was a
+# no-op: the 2026-04-24 PPO run promoted on eval means of 176.00 (step 50k)
+# and 162.00 (step 100k), reaching 8 bots by step 100k of 2,500,000.
+#
+# Reference points from that run, all on the raw eval scale:
+#   eval @ 2 bots, step 50k (barely trained):  176.00
+#   eval @ 4 bots, step 100k:                  162.00
+#   best eval over the whole run (8 bots):     193.90
+#   final eval (8 bots):                       166.50
+#
+# The bar has to clear ~176 to mean anything. 220/200 demands real improvement
+# over an untrained policy while staying inside the range this algorithm has
+# been observed to reach; the 4-bot bar is lower because the rung is harder.
+#
+# PROVISIONAL: calibrating these properly needs fixed-2-bot and fixed-4-bot
+# baseline runs to establish what "competent at this rung" scores, and no such
+# run exists yet. After the next run, check metrics/curriculum.json — if
+# promotions still fire at the earliest allowed eval, raise them again.
 curriculum:
   enabled: true
   min_evals_between_promotions: 2
   sync_eval_env: true
   stages:
-    - {num_bots: 2, promote_at: 3.0}
-    - {num_bots: 4, promote_at: 5.0}
+    - {num_bots: 2, promote_at: 220.0}
+    - {num_bots: 4, promote_at: 200.0}
     - {num_bots: 8, promote_at: null}   # terminal stage

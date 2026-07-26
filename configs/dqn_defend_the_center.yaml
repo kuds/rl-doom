@@ -16,6 +16,18 @@ env:
 
 hyperparams:
   lr: 1.0e-4
+  # Replay cost is buffer_size x 4x84x84 bytes x2 (SB3 keeps obs and next_obs
+  # as separate arrays) = 10.5 GiB here. Sized for the NVIDIA L4 Colab
+  # runtime these experiments actually use (~53 GiB system RAM); the April
+  # runs completed at this size.
+  #
+  # optimize_memory_usage=True would halve it, but SB3 rejects that together
+  # with handle_timeout_termination, which the pipeline needs for correct
+  # value targets on scenario timeouts.
+  #
+  # On a smaller machine, lower this: rl_doom.sb3_utils checks the estimate
+  # against real available RAM at startup and fails fast with the size that
+  # would fit, rather than OOMing mid-run.
   buffer_size: 200000
   learning_starts: 10000
   batch_size: 64
@@ -36,7 +48,19 @@ training:
 eval:
   eval_freq: 25000
   n_episodes: 10
-
+  # Stop once this many consecutive evals pass without a new best, so a run
+  # that has plateaued stops burning compute. Patience resets on a curriculum
+  # promotion (a harder rung legitimately scores lower). EvalCallback keeps the
+  # best checkpoint either way, so this only skips steps.
+  #
+  # Calibrated against the 2026-04 runs, which all peaked early and then
+  # declined: DQN/deadly_corridor best @ 400k of 2.5M then -40%;
+  # PPO/deathmatch best @ 250k of 2.5M then -14%. At these eval_freq values a
+  # patience of 20 would have ended both around 40% of budget while leaving
+  # PPO/deadly_corridor (peak @ 1.675M) untouched.
+  # Set to null to always train the full budget.
+  early_stop_patience: 20
+  early_stop_min_evals: 10
 policy:
   features_dim: 512             # NatureCNN final FC width (SB3 default)
   net_arch: []                  # extra MLP layers after the features extractor

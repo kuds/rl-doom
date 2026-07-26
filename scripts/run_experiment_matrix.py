@@ -57,6 +57,23 @@ Usage
 
     # Cap each run to a shorter budget for a fast smoke test.
     python -m scripts.run_experiment_matrix --matrix <path> --total-timesteps 50000
+
+    # Pick up where a previous invocation stopped, skipping completed cells.
+    python -m scripts.run_experiment_matrix --matrix <path> --resume
+
+Failure handling
+----------------
+
+A matrix is hours to days of compute, so one bad cell does not end the run.
+Each cell is isolated: a failure is recorded in the summary CSV with
+``status=failed`` and its error, and the remaining cells still execute. The
+process exits non-zero if anything failed, so a wrapper or CI job still
+notices. Pass ``--fail-fast`` to stop at the first failure instead.
+
+The summary CSV is appended to as each cell finishes rather than written once
+at the end, so it always reflects everything completed so far — including when
+the process is killed outright. ``--resume`` reads it back and skips cells
+already marked completed; failed cells are retried.
 """
 
 from __future__ import annotations
@@ -213,6 +230,7 @@ def _run_one(
             "checkpoint_freq": int(training_cfg.get("checkpoint_freq", 100_000)),
             "eval_freq": int(eval_cfg.get("eval_freq", 25_000)),
             "eval_episodes": int(eval_cfg.get("n_episodes", 10)),
+            "early_stop_patience": eval_cfg.get("early_stop_patience"),
         },
         curriculum=curriculum_cfg,
         matrix_name=matrix_name,
@@ -257,6 +275,8 @@ def _run_one(
             eval_freq=int(eval_cfg.get("eval_freq", 25_000)),
             eval_episodes=int(eval_cfg.get("n_episodes", 10)),
             checkpoint_freq=int(training_cfg.get("checkpoint_freq", 100_000)),
+            early_stop_patience=eval_cfg.get("early_stop_patience"),
+            early_stop_min_evals=int(eval_cfg.get("early_stop_min_evals", 10)),
             record_video=True,
             device=device,
             resize_shape=tuple(env_cfg.get("resize_shape", (84, 84))),
@@ -288,36 +308,86 @@ def _run_one(
     }
 
 
+SUMMARY_FIELDNAMES = [
+    "matrix",
+    "variant",
+    "scenario",
+    "algo",
+    "seed",
+    "status",
+    "error",
+    "mean_eval_reward",
+    "best_eval_reward",
+    "success_rate",
+    "curriculum_final_skill",
+    "wall_time_seconds",
+    "run_dir",
+]
+
+
+def matrix_summary_path(matrix_name: str) -> Path:
+    """Where the roll-up CSV for *matrix_name* lives."""
+    out_dir = TRAINING_JOBS / "_matrix"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"{matrix_name}.csv"
+
+
 def _write_matrix_summary(
     matrix_name: str, rows: list[dict[str, Any]],
 ) -> Path:
     """Drop a single CSV at ``training_jobs/_matrix/<matrix_name>.csv``."""
-    out_dir = TRAINING_JOBS / "_matrix"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{matrix_name}.csv"
-    fieldnames = [
-        "matrix",
-        "variant",
-        "scenario",
-        "algo",
-        "seed",
-        "mean_eval_reward",
-        "best_eval_reward",
-        "success_rate",
-        "curriculum_final_skill",
-        "wall_time_seconds",
-        "run_dir",
-    ]
+    out_path = matrix_summary_path(matrix_name)
     with out_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDNAMES)
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: row.get(k) for k in fieldnames})
+            writer.writerow({k: row.get(k) for k in SUMMARY_FIELDNAMES})
     return out_path
 
 
+def _append_matrix_row(matrix_name: str, row: dict[str, Any]) -> None:
+    """Append one completed cell to the roll-up CSV immediately.
+
+    The summary used to be written once, after the last cell. A crash in cell
+    3 of 24 therefore threw away the rows for cells 1 and 2 as well as
+    skipping 4-24. Appending as we go means the CSV always reflects everything
+    that has finished, however the run ends.
+    """
+    out_path = matrix_summary_path(matrix_name)
+    write_header = not out_path.exists()
+    with out_path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDNAMES)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({k: row.get(k) for k in SUMMARY_FIELDNAMES})
+
+
+def _completed_cells(matrix_name: str) -> set[tuple[str, int]]:
+    """``(variant, seed)`` pairs already recorded as completed for this matrix.
+
+    Read back from the roll-up CSV so ``--resume`` can skip them. Only
+    ``status=completed`` counts: a failed cell should be retried.
+    """
+    out_path = matrix_summary_path(matrix_name)
+    if not out_path.exists():
+        return set()
+    done: set[tuple[str, int]] = set()
+    with out_path.open(newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("status") != "completed":
+                continue
+            try:
+                done.add((row["variant"], int(row["seed"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return done
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--matrix",
         required=True,
@@ -342,6 +412,23 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Torch device (``cpu`` / ``cuda``). Default: auto-detect.",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Skip (variant, seed) cells already recorded as completed in "
+            "this matrix's summary CSV, and append to it rather than "
+            "starting it over. Failed cells are retried."
+        ),
+    )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help=(
+            "Stop at the first failed cell. The default is to log it, carry "
+            "on with the rest, and exit non-zero at the end."
+        ),
+    )
     args = parser.parse_args(argv)
 
     matrix_path = Path(args.matrix)
@@ -360,19 +447,68 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return 0
 
-    rows: list[dict[str, Any]] = []
+    already_done: set[tuple[str, int]] = set()
+    if args.resume:
+        already_done = _completed_cells(matrix_name)
+        if already_done:
+            print(
+                f"[matrix:{matrix_name}] --resume: skipping "
+                f"{len(already_done)} already-completed cell(s)",
+            )
+    elif matrix_summary_path(matrix_name).exists():
+        # Starting fresh: drop the old CSV so appended rows don't stack on top
+        # of a previous run's.
+        matrix_summary_path(matrix_name).unlink()
+
+    failures: list[tuple[str, int, str]] = []
+    completed = 0
     for spec in runs:
-        rows.append(
-            _run_one(
+        cell = (spec["_variant_name"], int(spec["seed"]))
+        if cell in already_done:
+            print(f"[matrix:{matrix_name}] skipping completed cell {cell[0]} seed={cell[1]}")
+            continue
+        try:
+            row = _run_one(
                 spec,
                 matrix_name=matrix_name,
                 total_timesteps_override=args.total_timesteps,
                 device=args.device,
-            ),
-        )
-    summary_path = _write_matrix_summary(matrix_name, rows)
-    print(f"\n[matrix:{matrix_name}] summary written to {summary_path}")
-    return 0
+            )
+            row["status"] = "completed"
+            completed += 1
+        except Exception as exc:  # noqa: BLE001 — one bad cell must not end the matrix
+            # A matrix is hours to days of compute. Losing the remaining cells
+            # to one failure — and, because the summary was written only at the
+            # end, losing the completed ones too — is the expensive failure
+            # mode this guards against.
+            print(
+                f"[matrix:{matrix_name}] FAILED variant={cell[0]} seed={cell[1]}: "
+                f"{type(exc).__name__}: {exc}",
+            )
+            failures.append((cell[0], cell[1], f"{type(exc).__name__}: {exc}"))
+            row = {
+                "matrix": matrix_name,
+                "variant": cell[0],
+                "scenario": spec.get("scenario"),
+                "algo": spec.get("algorithm"),
+                "seed": cell[1],
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            if args.fail_fast:
+                _append_matrix_row(matrix_name, row)
+                print(f"[matrix:{matrix_name}] --fail-fast: stopping after first failure")
+                return 1
+        _append_matrix_row(matrix_name, row)
+
+    summary_path = matrix_summary_path(matrix_name)
+    print(f"\n[matrix:{matrix_name}] {completed} completed, {len(failures)} failed")
+    for variant, seed, err in failures:
+        print(f"  FAILED {variant} seed={seed}: {err}")
+    print(f"[matrix:{matrix_name}] summary written to {summary_path}")
+    # Non-zero exit so CI / a wrapper script notices, without having thrown
+    # away the runs that did succeed.
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

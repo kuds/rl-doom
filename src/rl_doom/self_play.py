@@ -300,7 +300,7 @@ class SelfPlayWrapper(gym.Env):
             infos[self.learner_agent],
         )
 
-    def render(self) -> np.ndarray | None:  # type: ignore[override]
+    def render(self) -> np.ndarray | None:
         # Return just the learner's POV frame; callers that want all POVs can
         # drill into ``self.base_env.render()``.
         frames = self.base_env.render()

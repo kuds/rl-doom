@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,43 +19,74 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from rl_doom.paths import REPO_ROOT
+
 # ---------------------------------------------------------------------------
 # Google Drive persistence
 # ---------------------------------------------------------------------------
 
+def in_colab() -> bool:
+    """True when running inside a Google Colab runtime.
+
+    Checked by importing ``google.colab`` rather than probing for
+    ``/content``, which also exists on other hosted runtimes.
+    """
+    try:
+        import google.colab  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+# Artifact trees that ``rl_doom.paths`` writes into, and therefore the ones
+# worth persisting to Drive across Colab sessions.
+DRIVE_SUBDIRS: tuple[str, ...] = ("training_jobs", "analysis")
+
+
 def setup_google_drive(
     drive_root: str = "/content/drive/MyDrive/rl-doom",
-    subdirs: list[str] | None = None,
-) -> str:
-    """Mount Google Drive and symlink artifact dirs for Colab persistence.
+    subdirs: Sequence[str] | None = None,
+    repo_root: str | Path | None = None,
+) -> str | None:
+    """Mount Google Drive and symlink the artifact trees into it.
 
-    Call this at the top of each notebook when running on Colab.  On
-    non-Colab runtimes this is a no-op (the import will fail silently).
+    Call at the top of a notebook. **Off Colab this really is a no-op**: it
+    returns ``None`` without touching the filesystem. (The previous version
+    documented that behaviour but did not implement it — the bare
+    ``from google.colab import drive`` raised ``ModuleNotFoundError``.)
 
-    Returns the drive root path.
+    Symlinks ``<repo>/training_jobs`` and ``<repo>/analysis`` at
+    ``<drive_root>/...`` so runs survive a runtime being recycled. Those are
+    the trees ``rl_doom.paths`` actually writes; the old default named a flat
+    ``checkpoints/logs/figures/media/runs`` layout that nothing produces.
+
+    Returns the drive root, or ``None`` when not on Colab.
     """
-    if subdirs is None:
-        subdirs = ["checkpoints", "logs", "figures", "media", "runs"]
+    if not in_colab():
+        return None
 
     from google.colab import drive
+
+    names = tuple(subdirs) if subdirs is not None else DRIVE_SUBDIRS
+    root = Path(repo_root) if repo_root is not None else REPO_ROOT
 
     drive.mount("/content/drive")
     os.makedirs(drive_root, exist_ok=True)
 
-    for subdir in subdirs:
-        drive_dir = f"{drive_root}/{subdir}"
-        local_dir = os.path.abspath(f"../{subdir}")
+    for subdir in names:
+        drive_dir = os.path.join(drive_root, subdir)
+        local_dir = str(root / subdir)
         os.makedirs(drive_dir, exist_ok=True)
 
-        # Refresh stale symlink
+        # Refresh a stale symlink from a previous session.
         if os.path.islink(local_dir):
             os.remove(local_dir)
 
-        # Migrate existing local artifacts into Drive
+        # Migrate anything written locally before the mount.
         if os.path.isdir(local_dir):
-            for f in os.listdir(local_dir):
-                src = os.path.join(local_dir, f)
-                dst = os.path.join(drive_dir, f)
+            for name in os.listdir(local_dir):
+                src = os.path.join(local_dir, name)
+                dst = os.path.join(drive_dir, name)
                 if not os.path.exists(dst):
                     shutil.move(src, dst)
             shutil.rmtree(local_dir)
@@ -63,6 +95,35 @@ def setup_google_drive(
 
     print(f"Google Drive mounted. Artifacts will persist at: {drive_root}")
     return drive_root
+
+
+def setup_colab(
+    repo_url: str = "https://github.com/kuds/rl-doom.git",
+    checkout: str = "/content/rl-doom",
+    extras: str = "notebooks",
+) -> bool:
+    """Clone + install the repo when running on Colab; no-op otherwise.
+
+    Notebooks previously carried this inline under a comment reading
+    "Uncomment the block below when running on Google Colab" — above code that
+    was already uncommented. Run locally, they ``os.chdir`` into
+    ``/content/rl-doom`` and raise. Guarding at runtime means one cell works in
+    both places, with nothing to edit.
+
+    Returns True if Colab setup ran.
+    """
+    if not in_colab():
+        return False
+
+    import subprocess
+
+    if not os.path.exists(checkout):
+        subprocess.run(["git", "clone", repo_url, checkout], check=True)
+    os.chdir(f"{checkout}/notebooks")
+    subprocess.run(
+        ["pip", "install", "-q", "-e", f"{checkout}[{extras}]"], check=True,
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------

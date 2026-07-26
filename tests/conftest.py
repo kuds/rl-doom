@@ -62,16 +62,25 @@ class _FakeDoomGame:
         self.idx = -1
         self.instances.append(self)
         self._tick = -1  # bumped to 0 on first make_action
+        # Mirrors the real ``deathmatch.cfg`` available_buttons list, in the
+        # order ViZDoom reports it. Fidelity matters here: the fake previously
+        # exposed a 7-button subset with its own ordering, which meant tests
+        # could not have caught a compound action referencing a button the real
+        # scenario lacks — or agreed with the real cfg on which index means
+        # what. Tests should derive indices from ``button_index`` below rather
+        # than hardcoding them.
         self._buttons = [
             _FakeButton(n)
             for n in (
-                "MOVE_FORWARD",
-                "MOVE_BACKWARD",
-                "TURN_LEFT",
-                "TURN_RIGHT",
-                "MOVE_LEFT",
-                "MOVE_RIGHT",
                 "ATTACK",
+                "SPEED",
+                "STRAFE",
+                "MOVE_RIGHT",
+                "MOVE_LEFT",
+                "MOVE_BACKWARD",
+                "MOVE_FORWARD",
+                "TURN_RIGHT",
+                "TURN_LEFT",
             )
         ]
         self._available_vars: list[str] = []
@@ -155,6 +164,15 @@ class _FakeDoomGame:
     # --- spaces -----------------------------------------------------------
     def get_available_buttons(self) -> list[_FakeButton]:
         return list(self._buttons)
+
+    def button_index(self, name: str) -> int:
+        """Index of *name* in the button vector — for assertions in tests.
+
+        Lets a test say "the ATTACK bit is set" without hardcoding a position
+        that changes if the button list is brought further in line with the
+        real scenario cfg.
+        """
+        return [b.name for b in self._buttons].index(name)
 
     def get_available_buttons_size(self) -> int:
         return len(self._buttons)

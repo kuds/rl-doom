@@ -8,7 +8,7 @@ version = "0.1.2"
 description = "Reinforcement learning agents for Doom using ViZDoom"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "vizdoom>=1.2",
     "gymnasium",
@@ -21,6 +21,11 @@ dependencies = [
     "stable-baselines3>=2.3",
     "sb3-contrib>=2.3",
     "pettingzoo>=1.24",
+    # Lets stable-baselines3 (and rl_doom.sb3_utils.check_replay_buffer_fits)
+    # size a DQN replay buffer against real available memory instead of
+    # skipping the check. SB3 treats it as optional and silently no-ops the
+    # check when it is absent.
+    "psutil",
 ]
 
 [project.optional-dependencies]
@@ -58,7 +63,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 99
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
@@ -67,8 +72,15 @@ select = ["E", "F", "W", "I"]
 testpaths = ["tests"]
 
 [tool.mypy]
-python_version = "3.10"
-files = ["src", "tests"]
+# `python_version` is deliberately unset, so mypy targets whichever interpreter
+# it runs under. Pinning it to a single version made a CI leg fail inside
+# numpy's own stubs — they use PEP 695 `type` statements, which mypy rejects as
+# a syntax error when told to analyse as an older Python.
+#
+# The CI matrix (3.11 / 3.12 / 3.13) gives better coverage than one pinned
+# target anyway: the lowest leg still catches syntax or typing that would not
+# run on the floor declared in `requires-python`.
+files = ["src", "tests", "scripts"]
 check_untyped_defs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
@@ -84,6 +96,7 @@ module = [
     "matplotlib.*",
     "vizdoom",
     "vizdoom.*",
+    "google",
     "google.colab",
     "google.colab.*",
     "stable_baselines3",
@@ -92,6 +105,7 @@ module = [
     "sb3_contrib.*",
     "pettingzoo",
     "pettingzoo.*",
+    "psutil",
     "yaml",
 ]
 ignore_missing_imports = true

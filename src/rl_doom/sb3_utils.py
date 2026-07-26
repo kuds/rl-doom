@@ -47,6 +47,7 @@ from rl_doom.curriculum import (
     SkillCurriculumCallback,
     parse_curriculum_config,
 )
+from rl_doom.early_stop import StopOnEvalPlateau
 from rl_doom.paths import mark_run_status, update_latest_symlink
 from rl_doom.scenario_limits import EPISODE_METRIC_KEYS
 
@@ -55,6 +56,158 @@ from rl_doom.scenario_limits import EPISODE_METRIC_KEYS
 # of PPO from sb3-contrib; it shares PPO's hyperparameters and adds an
 # ``lstm_hidden_size`` knob via policy_kwargs.
 _PPO_FAMILY = {"ppo", "recurrent_ppo"}
+
+
+def _recurrent_ppo_class() -> type[BaseAlgorithm]:
+    """Import ``RecurrentPPO`` on demand.
+
+    ``sb3-contrib`` is an optional dependency; deferring the import keeps
+    PPO/DQN-only installs working.
+    """
+    from sb3_contrib import RecurrentPPO
+
+    return RecurrentPPO
+
+
+# Algorithm name -> SB3 class, behind lazy factories so ``sb3_contrib`` is only
+# imported when it is actually asked for.
+#
+# One registry rather than a dispatch per call site. There used to be three,
+# and two of them ended in a silent ``else: DQN`` catch-all, so any name that
+# was not exactly "ppo" got loaded through ``DQN.load``. That is not
+# hypothetical: notebook 05 analyses ``["dqn", "ppo", "recurrent_ppo"]`` and
+# every recurrent_ppo run failed to load, while ``_record_video``'s copy would
+# have mis-loaded at the very end of a multi-hour run, after training had
+# already succeeded.
+_ALGO_CLASSES: dict[str, Callable[[], type[BaseAlgorithm]]] = {
+    "ppo": lambda: PPO,
+    "dqn": lambda: DQN,
+    "recurrent_ppo": _recurrent_ppo_class,
+}
+
+
+def _format_gib(n_bytes: float) -> str:
+    return f"{n_bytes / 2**30:.1f} GiB"
+
+
+def estimate_replay_bytes(buffer_size: int, obs_space: Any, n_envs: int = 1) -> int:
+    """Bytes SB3's ``ReplayBuffer`` will allocate for observations.
+
+    SB3 keeps ``observations`` *and* ``next_observations`` as separate arrays,
+    so the cost is two full copies of the frame stack per transition. The
+    ``optimize_memory_usage=True`` layout that would halve this is not usable
+    here: SB3 rejects it together with ``handle_timeout_termination=True``,
+    which is what makes a truncated episode bootstrap ``V(s')`` instead of
+    treating a scenario timeout as absorbing (see ``DoomEnv.step``). Correct
+    value targets are worth more than the memory.
+
+    Non-observation arrays (actions, rewards, dones, timeouts) are a few bytes
+    per transition and are ignored.
+    """
+    obs_bytes = int(np.prod(obs_space.shape)) * np.dtype(obs_space.dtype).itemsize
+    per_env = max(buffer_size // max(n_envs, 1), 1)
+    return per_env * max(n_envs, 1) * obs_bytes * 2
+
+
+def check_replay_buffer_fits(
+    buffer_size: int, obs_space: Any, n_envs: int = 1, *, headroom: float = 0.9,
+) -> None:
+    """Fail fast when a DQN replay buffer cannot fit in available memory.
+
+    SB3 has its own check, but it only warns, only *after* the allocation is
+    attempted, and only when ``psutil`` is importable — which it silently is
+    not in a default install. The observed failure without this guard is a bare
+    ``numpy._core._exceptions._ArrayMemoryError`` partway into a run that has
+    already spent minutes building envs.
+    """
+    needed = estimate_replay_bytes(buffer_size, obs_space, n_envs)
+    try:
+        import psutil
+    except ImportError:
+        # Without psutil there is nothing to compare against; the estimate is
+        # still worth printing so an OOM later is at least attributable.
+        print(
+            f"[train_sb3] replay buffer needs ~{_format_gib(needed)} "
+            f"(buffer_size={buffer_size:,}); install psutil to have this "
+            f"checked against available memory before allocating.",
+        )
+        return
+
+    available = psutil.virtual_memory().available
+    if needed > available * headroom:
+        per_transition = max(estimate_replay_bytes(1, obs_space, n_envs), 1)
+        fits = int(available * headroom / per_transition)
+        raise MemoryError(
+            f"DQN replay buffer needs ~{_format_gib(needed)} "
+            f"(buffer_size={buffer_size:,} x {obs_space.shape} uint8 x2 for "
+            f"next_obs) but only {_format_gib(available)} is available.\n"
+            f"Lower `hyperparams.buffer_size` in the config: "
+            f"~{fits:,} transitions fit in the memory you have.\n"
+            f"Note that `optimize_memory_usage=True` would halve this but SB3 "
+            f"rejects it alongside `handle_timeout_termination=True`, which "
+            f"this pipeline needs for correct value targets on timeouts.",
+        )
+
+
+def apply_stage0_env_settings(
+    stage0: CurriculumStage,
+    *,
+    doom_skill: int | None,
+    num_bots: int,
+    verbose: bool = True,
+) -> tuple[int | None, int]:
+    """Fold a curriculum's first stage into the env settings it owns.
+
+    Returns the ``(doom_skill, num_bots)`` the training and eval envs should be
+    built with. A stage only overrides the knobs it actually sets — the rest
+    stay as the caller configured them.
+
+    That distinction is the whole point. Not every curriculum ramps difficulty:
+    the deathmatch curricula ramp *bots*, so their stages carry only
+    ``num_bots`` and leave ``skill`` as ``None``. Overriding unconditionally
+    replaced the config's ``doom_skill: 3`` with ``None``, which falls through
+    ``SCENARIO_DEFAULT_SKILL`` (empty) to the scenario cfg's own default — so
+    the curriculum arm trained at a different difficulty from its baseline
+    sibling, confounding the comparison the matrix exists to make.
+    ``apply_stage_to_doom_env`` guards on ``skill is not None`` too, so the
+    callback could not recover it either.
+    """
+    if stage0.skill is not None:
+        if verbose and doom_skill is not None and doom_skill != stage0.skill:
+            print(
+                f"[train_sb3] curriculum enabled: overriding doom_skill="
+                f"{doom_skill} with stage-0 skill={stage0.skill}",
+            )
+        doom_skill = stage0.skill
+    if stage0.num_bots is not None:
+        if verbose and num_bots and num_bots != stage0.num_bots:
+            print(
+                f"[train_sb3] curriculum enabled: overriding num_bots="
+                f"{num_bots} with stage-0 num_bots={stage0.num_bots}",
+            )
+        # Seed at construction as well as through the callback. The callback
+        # applies stage 0 in ``_on_training_start``, which is early enough for
+        # training, but building the envs with the right value keeps pre- and
+        # post-callback state consistent — and the video env at the end reads
+        # these same variables.
+        num_bots = stage0.num_bots
+    return doom_skill, num_bots
+
+
+def resolve_algo_class(algo: str) -> type[BaseAlgorithm]:
+    """Return the SB3 class for *algo*, raising on anything unrecognised.
+
+    Raising matters more than it looks: the failure mode this replaces was
+    loading a checkpoint through the wrong class, which surfaces as a confusing
+    shape/observation-space error far from the actual mistake — or, worse, does
+    not surface at all.
+    """
+    factory = _ALGO_CLASSES.get(algo.lower())
+    if factory is None:
+        raise ValueError(
+            f"Unknown algo {algo!r}; expected one of {sorted(_ALGO_CLASSES)}.",
+        )
+    return factory()
 
 # ---------------------------------------------------------------------------
 # GPU / environment metadata
@@ -113,11 +266,13 @@ def _build_model(
     """
     algo_norm = algo.lower()
     pk = policy_kwargs or {}
-    if algo_norm in {"ppo", "recurrent_ppo"}:
-        # sb3-contrib is an optional dependency: import it only when the
-        # caller actually asks for recurrent_ppo so projects that just want
-        # PPO/DQN don't pay the install cost (and CI envs without
-        # sb3-contrib can still run the rest of the suite).
+    # Validate against the registry up front, so an unknown name fails here
+    # rather than further downstream. The branches below still name concrete
+    # classes: each algorithm takes a different constructor signature, and
+    # going through the registry's ``type[BaseAlgorithm]`` would erase the
+    # types that let mypy catch a misspelled hyperparameter kwarg.
+    resolve_algo_class(algo_norm)
+    if algo_norm in _PPO_FAMILY:
         ppo_kwargs = dict(
             learning_rate=hyperparams["lr"],
             n_steps=hyperparams["n_steps"],
@@ -136,11 +291,17 @@ def _build_model(
             policy_kwargs=pk,
         )
         if algo_norm == "recurrent_ppo":
-            from sb3_contrib import RecurrentPPO
-
-            return RecurrentPPO("CnnLstmPolicy", vec_env, **ppo_kwargs)
+            return _recurrent_ppo_class()("CnnLstmPolicy", vec_env, **ppo_kwargs)
         return PPO("CnnPolicy", vec_env, **ppo_kwargs)
     if algo_norm == "dqn":
+        # Check before constructing: SB3 allocates the whole buffer eagerly in
+        # DQN.__init__, so an oversized buffer_size otherwise surfaces as a
+        # numpy MemoryError after the envs are already up.
+        check_replay_buffer_fits(
+            int(hyperparams["buffer_size"]),
+            vec_env.observation_space,
+            n_envs=getattr(vec_env, "num_envs", 1),
+        )
         return DQN(
             "CnnPolicy",
             vec_env,
@@ -163,8 +324,12 @@ def _build_model(
             verbose=verbose,
             policy_kwargs=pk,
         )
+    # Unreachable: resolve_algo_class above rejects anything not in the
+    # registry. Kept so adding a registry entry without a construction branch
+    # here fails loudly instead of falling off the end returning None.
     raise ValueError(
-        f"Unknown algo {algo!r}; expected 'ppo', 'recurrent_ppo', or 'dqn'.",
+        f"Algo {algo!r} is registered but has no construction branch in "
+        f"_build_model.",
     )
 
 
@@ -419,8 +584,6 @@ def _plot_eval_performance(
 
     means = results.mean(axis=1)
     stds = results.std(axis=1)
-    len_means = ep_lengths.mean(axis=1) if ep_lengths is not None else None
-    len_stds = ep_lengths.std(axis=1) if ep_lengths is not None else None
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     ax = axes[0]
@@ -432,7 +595,15 @@ def _plot_eval_performance(
     ax.grid(True, alpha=0.3)
 
     ax = axes[1]
-    if len_means is not None:
+    # Derive both series inside the guard. They used to be computed above as a
+    # correlated pair of Optionals and only ``len_means`` was checked here, so
+    # the band arithmetic read a value the guard never covered. Unreachable in
+    # practice — both came from the same ``ep_lengths is not None`` — but the
+    # invariant was implicit, and editing one line would have broken it
+    # silently. numpy 2.5's stricter stubs flagged it.
+    if ep_lengths is not None:
+        len_means = ep_lengths.mean(axis=1)
+        len_stds = ep_lengths.std(axis=1)
         ax.plot(timesteps, len_means, marker="o", color="green")
         ax.fill_between(
             timesteps, len_means - len_stds, len_means + len_stds,
@@ -551,9 +722,14 @@ def _record_video(
             done = terminated or truncated
             episode_start = np.array([False])
             step += 1
-        if terminated:
+        # ``DoomEnv`` labels every episode it ends — including a scenario
+        # timeout, which it reports as ``truncated`` — so prefer its reason
+        # whenever the env is what stopped us. ``"truncated"`` is reserved for
+        # the recorder hitting its own ``max_steps`` cap, which is a different
+        # thing and worth telling apart in the episode JSON.
+        if terminated or truncated:
             termination = str(last_info.get("termination_reason", "unknown"))
-        elif truncated or step >= max_steps:
+        elif step >= max_steps:
             termination = "truncated"
         else:
             termination = "unknown"
@@ -636,6 +812,9 @@ def train_sb3(
     use_compound_actions: bool = True,
     policy_kwargs: dict[str, Any] | None = None,
     curriculum: dict[str, Any] | list[CurriculumStage] | None = None,
+    extra_callbacks: list[BaseCallback] | None = None,
+    early_stop_patience: int | None = None,
+    early_stop_min_evals: int = 10,
 ) -> dict[str, Any]:
     """Train a single SB3 model end-to-end and write *all* artifacts now.
 
@@ -662,6 +841,20 @@ def train_sb3(
     on_complete :
         Optional hook invoked with ``run_dir`` after all artifacts are written
         (e.g. to display the video in a Jupyter cell).
+    extra_callbacks :
+        Additional SB3 callbacks appended after the built-in eval /
+        checkpoint / termination / curriculum ones. Useful for run-specific
+        instrumentation without forking this function.
+    early_stop_patience :
+        Stop once this many consecutive evals pass without a new best eval
+        reward. ``None`` (default) trains the full budget. Patience is
+        measured within a curriculum rung — a promotion resets it, since a
+        harder rung legitimately scores lower. The best checkpoint is saved by
+        ``EvalCallback`` regardless, so stopping early costs nothing but the
+        steps it skips.
+    early_stop_min_evals :
+        Minimum evals on a rung before ``early_stop_patience`` can fire, so a
+        slow start is not mistaken for a plateau.
     curriculum :
         Optional skill-curriculum specification. Accepts either a raw YAML
         dict (``{"stages": [...], "min_evals_between_promotions": ...}``) or
@@ -698,14 +891,9 @@ def train_sb3(
             if k in curriculum
         }
     if curriculum_stages:
-        # The curriculum owns the initial difficulty — override any
-        # ``doom_skill`` the caller passed so train + eval envs agree.
-        if doom_skill is not None and doom_skill != curriculum_stages[0].skill:
-            print(
-                f"[train_sb3] curriculum enabled: overriding doom_skill="
-                f"{doom_skill} with stage-0 skill={curriculum_stages[0].skill}",
-            )
-        doom_skill = curriculum_stages[0].skill
+        doom_skill, num_bots = apply_stage0_env_settings(
+            curriculum_stages[0], doom_skill=doom_skill, num_bots=num_bots,
+        )
 
     # --- envs ---------------------------------------------------------
     from rl_doom.env import make_sb3_env
@@ -802,29 +990,92 @@ def train_sb3(
             eval_cb, curriculum_stages, verbose=verbose, **curriculum_kwargs,
         )
         callbacks.append(curriculum_cb)
+    # After the curriculum callback so that on any given step it sees the
+    # promotion that step produced, rather than reacting one eval late.
+    early_stop_cb: StopOnEvalPlateau | None = None
+    if early_stop_patience:
+        early_stop_cb = StopOnEvalPlateau(
+            eval_cb,
+            patience=early_stop_patience,
+            min_evals=early_stop_min_evals,
+            curriculum_cb=curriculum_cb,
+            verbose=1,
+        )
+        callbacks.append(early_stop_cb)
+    # Appended last so a caller's callback sees the state the built-in ones
+    # have already updated.
+    if extra_callbacks:
+        callbacks.extend(extra_callbacks)
 
     # --- train --------------------------------------------------------
+    #
+    # Everything that makes a run useful — the model, metrics, figures, video,
+    # config.json, stage_summary.txt — is written *after* learn() returns, so
+    # an unguarded exception here discarded all of it. On a 2.5M-step Colab run
+    # that meant a failure at step 2.4M left nothing but periodic checkpoint
+    # zips that nothing in the repo reads.
+    #
+    # On failure we still save the weights and write whatever metrics exist,
+    # mark the run failed, and re-raise. A partial run that can be inspected
+    # beats a clean traceback over an empty directory.
     t_start = time.time()
-    model.learn(
-        total_timesteps=total_timesteps,
-        callback=callbacks,
-        progress_bar=False,
-    )
-    wall_time = time.time() - t_start
-    fps = total_timesteps / wall_time if wall_time > 0 else 0.0
-
-    # --- persist ------------------------------------------------------
-    model.save(str(ckpt_dir / "final.zip"))
-    # Save VecNormalize running stats so a future resumed run can pick up
-    # with the same reward-scale estimate (inference/video doesn't need it
-    # since we only normalise rewards, not observations).
-    if isinstance(vec_env, VecNormalize):
-        vec_env.save(str(ckpt_dir / "vec_normalize.pkl"))
+    training_error: BaseException | None = None
     try:
-        vec_env.close()
-        eval_env.close()
-    except Exception:  # noqa: BLE001 — close is best-effort
-        pass
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=callbacks,
+            progress_bar=False,
+        )
+    except BaseException as exc:  # noqa: BLE001 — re-raised below
+        # BaseException, not Exception: KeyboardInterrupt is the *expected* way
+        # a human stops an overlong run, and losing the run to Ctrl-C is the
+        # most annoying version of this bug.
+        training_error = exc
+        print(
+            f"[train_sb3] training raised {type(exc).__name__}: {exc}\n"
+            f"[train_sb3] salvaging artifacts into {run_dir} before re-raising.",
+        )
+    finally:
+        wall_time = time.time() - t_start
+        # Steps actually completed, which is not total_timesteps on failure.
+        steps_done = int(getattr(model, "num_timesteps", 0))
+        fps = steps_done / wall_time if wall_time > 0 else 0.0
+
+        # --- persist --------------------------------------------------
+        # Saving runs on both paths: on failure these are the only weights
+        # that will exist.
+        try:
+            model.save(str(ckpt_dir / "final.zip"))
+            # Save VecNormalize running stats so a future resumed run can pick
+            # up with the same reward-scale estimate (inference/video doesn't
+            # need it since we only normalise rewards, not observations).
+            if isinstance(vec_env, VecNormalize):
+                vec_env.save(str(ckpt_dir / "vec_normalize.pkl"))
+        except Exception as save_exc:  # noqa: BLE001 — best-effort salvage
+            print(f"[train_sb3] could not save final checkpoint: {save_exc}")
+
+        # Teardown belongs in the finally: ViZDoom spawns a native process per
+        # env, and on the old success-only path a failed run leaked every one
+        # of them.
+        for env_name, env_to_close in (("train", vec_env), ("eval", eval_env)):
+            try:
+                env_to_close.close()
+            except Exception as close_exc:  # noqa: BLE001 — best-effort
+                # Was `except Exception: pass` around both closes together, so
+                # a failure closing the train env also skipped the eval env.
+                print(f"[train_sb3] error closing {env_name} env: {close_exc}")
+
+    if training_error is not None:
+        _write_termination_report(termination_tracker, metrics_dir)
+        mark_run_status(
+            run_dir,
+            status="failed",
+            error=f"{type(training_error).__name__}: {training_error}",
+            completed_timesteps=steps_done,
+            requested_timesteps=total_timesteps,
+            wall_time_seconds=wall_time,
+        )
+        raise training_error
 
     progress = _load_progress_csv(tb_dir / "progress.csv")
     episodes = _collect_episode_stats(monitor_dir)
@@ -864,7 +1115,10 @@ def train_sb3(
         "eval_rewards": _legacy_eval_log(evaluations),
         "wall_time_seconds": wall_time,
         "fps": fps,
-        "total_env_steps": total_timesteps,
+        # Steps actually run, not requested: they differ whenever training
+        # stops early, and reporting the request would overstate both this and
+        # the FPS derived from it.
+        "total_env_steps": steps_done,
         **per_episode_metrics,
     }
     np.savez(metrics_dir / "training.npz", **savez_kwargs)
@@ -882,16 +1136,8 @@ def train_sb3(
         # fall back to the in-memory (final-step) model if eval didn't run.
         best_ckpt = ckpt_dir / "best" / "best_model.zip"
         if best_ckpt.exists():
-            algo_norm = algo.lower()
-            if algo_norm == "recurrent_ppo":
-                from sb3_contrib import RecurrentPPO
-
-                cls: type[BaseAlgorithm] = RecurrentPPO
-            elif algo_norm == "ppo":
-                cls = PPO
-            else:
-                cls = DQN
-            video_model: BaseAlgorithm = cls.load(str(best_ckpt), device=device)
+            video_cls = resolve_algo_class(algo)
+            video_model: BaseAlgorithm = video_cls.load(str(best_ckpt), device=device)
         else:
             video_model = model
         # Match the video env to the eval env. When a curriculum ran, the
@@ -937,7 +1183,13 @@ def train_sb3(
     total_eps = sum(termination_tracker.counts.values())
     goal_count = termination_tracker.counts.get("goal_reached", 0)
     success_rate = (goal_count / total_eps) if total_eps else None
-    mark_run_status(run_dir, status="completed")
+    mark_run_status(
+        run_dir,
+        status="completed",
+        stopped_early=bool(early_stop_cb and early_stop_cb.stopped_early),
+        stopped_at_step=early_stop_cb.stopped_at_step if early_stop_cb else None,
+        completed_timesteps=steps_done,
+    )
     update_latest_symlink(scenario, algo.lower(), run_dir)
 
     # Write stage_summary.txt for this run, in-process (no subprocess).
@@ -962,6 +1214,8 @@ def train_sb3(
         "curriculum_promotions": (
             curriculum_cb.promotions if curriculum_cb else None
         ),
+        "stopped_early": bool(early_stop_cb and early_stop_cb.stopped_early),
+        "stopped_at_step": early_stop_cb.stopped_at_step if early_stop_cb else None,
     }
 
     if on_complete is not None:

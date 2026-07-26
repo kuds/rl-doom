@@ -40,15 +40,16 @@ hyperparams:
   imag_horizon: 20              # longer horizon — corridor needs lookahead
 
 training:
-  total_timesteps: 1000000      # 2x the baseline budget; curriculum gives
-                                # the world model more time to relearn
-                                # dynamics across the two skill flips
+  # Matched to dreamer_deadly_corridor.yaml (the baseline arm) so the matrix
+  # comparison isolates the curriculum. This budget was picked because the
+  # world model needs time to relearn dynamics across the two skill flips;
+  # the baseline was raised to match rather than this being cut.
+  total_timesteps: 1000000
   checkpoint_freq: 100000
 
 eval:
   eval_freq: 25000
   n_episodes: 5
-
 # Skill curriculum.
 #
 # Thresholds match the PPO-curriculum YAML so the skill-up cadence is
