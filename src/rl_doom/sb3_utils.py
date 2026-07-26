@@ -584,8 +584,6 @@ def _plot_eval_performance(
 
     means = results.mean(axis=1)
     stds = results.std(axis=1)
-    len_means = ep_lengths.mean(axis=1) if ep_lengths is not None else None
-    len_stds = ep_lengths.std(axis=1) if ep_lengths is not None else None
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     ax = axes[0]
@@ -597,7 +595,15 @@ def _plot_eval_performance(
     ax.grid(True, alpha=0.3)
 
     ax = axes[1]
-    if len_means is not None:
+    # Derive both series inside the guard. They used to be computed above as a
+    # correlated pair of Optionals and only ``len_means`` was checked here, so
+    # the band arithmetic read a value the guard never covered. Unreachable in
+    # practice — both came from the same ``ep_lengths is not None`` — but the
+    # invariant was implicit, and editing one line would have broken it
+    # silently. numpy 2.5's stricter stubs flagged it.
+    if ep_lengths is not None:
+        len_means = ep_lengths.mean(axis=1)
+        len_stds = ep_lengths.std(axis=1)
         ax.plot(timesteps, len_means, marker="o", color="green")
         ax.fill_between(
             timesteps, len_means - len_stds, len_means + len_stds,
