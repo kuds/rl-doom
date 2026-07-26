@@ -8,7 +8,7 @@ version = "0.1.2"
 description = "Reinforcement learning agents for Doom using ViZDoom"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "vizdoom>=1.2",
     "gymnasium",
@@ -63,7 +63,7 @@ where = ["src"]
 
 [tool.ruff]
 line-length = 99
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
@@ -73,13 +73,13 @@ testpaths = ["tests"]
 
 [tool.mypy]
 # `python_version` is deliberately unset, so mypy targets whichever interpreter
-# it runs under. Pinning it to "3.10" made the 3.12 CI leg fail inside numpy's
-# own stubs — they use PEP 695 `type` statements, which mypy rejects as a
-# syntax error when told to analyse as 3.10.
+# it runs under. Pinning it to a single version made a CI leg fail inside
+# numpy's own stubs — they use PEP 695 `type` statements, which mypy rejects as
+# a syntax error when told to analyse as an older Python.
 #
-# The CI matrix (3.10 / 3.11 / 3.12) gives better coverage than a single pinned
-# target anyway: the 3.10 leg still catches syntax or typing that would not run
-# on the floor declared in `requires-python`.
+# The CI matrix (3.11 / 3.12 / 3.13) gives better coverage than one pinned
+# target anyway: the lowest leg still catches syntax or typing that would not
+# run on the floor declared in `requires-python`.
 files = ["src", "tests", "scripts"]
 check_untyped_defs = true
 warn_redundant_casts = true
